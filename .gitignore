@@ -46,3 +46,8 @@ REVIEW_PROMPT.md
 .omc/
 /demo/
 /contracts/tvm/
+
+# Foundry build artifacts
+contracts/erc8004/cache/
+contracts/erc8004/out/
+contracts/erc8004/lib/
