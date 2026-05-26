@@ -75,19 +75,28 @@ If the live agent count is small enough, backfill in the initializer. Otherwise,
 
 Migration is **developer-driven**. The EIP-1271 path on the TBA requires the NFT owner's signature; there is no administrative shortcut to migrate an agent without the developer's participation.
 
-### Per-agent migration sequence
+### What the developer actually does
 
-For each existing `agentId` owned by a developer:
+From a developer's perspective, migration is two actions, both through the CLI we ship — they never compute addresses or build calldata by hand:
 
-1. **Compute** the TBA address from the canonical 6551 inputs above. Pure off-chain derivation.
-2. **Deploy** the TBA via the 6551 registry's `createAccount` if not already deployed. Idempotent; ~30k gas. Required because `setAgentWallet`'s EIP-1271 fallback `staticcall`s the wallet, which only works if the contract exists.
-3. **Sign** the `setAgentWallet` EIP-712 digest with the developer's EOA. The TBA's `isValidSignature` will return the magic value because the recovered signer matches the NFT owner.
+1. **Connect the wallet that owns the agents** and run `x402 erc8004 migrate`. The wallet must be the current NFT owner of the `agentId`s being migrated, because that EOA's signature is what authorizes each new wallet.
+2. **Approve the transactions** the CLI presents — one TBA deployment and one `setAgentWallet` per agent (or a single batched multicall; see below). Sign the EIP-712 digests when prompted.
+
+That's the entire developer-facing surface. Everything below is what the CLI does on their behalf for each `agentId`.
+
+### What happens under the hood, per `agentId`
+
+1. **Compute** the TBA address from the canonical 6551 inputs above. Pure off-chain derivation; no transaction.
+2. **Deploy** the TBA via the 6551 registry's `createAccount` if not already deployed. Idempotent; ~30k gas. Required because `setAgentWallet`'s EIP-1271 fallback `staticcall`s the wallet, which only works once the contract exists.
+3. **Sign** the `setAgentWallet` EIP-712 digest with the developer's EOA. The TBA's `isValidSignature` returns the magic value because the recovered signer matches the NFT owner — so the developer's existing key is the only credential needed; no new per-agent key is ever created.
 4. **Submit** `setAgentWallet(agentId, tbaAddress, deadline, signature)`. The uniqueness check passes because the TBA address is unique by construction. The previous shared `agentWallet` entry is cleared from the reverse map; the new entry is written.
+
+For a developer with N agents on one wallet, the CLI batches steps 2–4 so the whole set is migrated in one connected session. If the TBA deployments and `setAgentWallet` calls are routed through a multicall, the developer signs once for the batch rather than 2N times.
 
 ### Tooling delivered in this extension
 
 - **CLI / script in `python/x402/extensions/erc8004`**: given a developer wallet address, enumerates owned `agentId`s (via `Transfer` event scan on the registry), computes each TBA address, deploys missing TBAs, builds the `setAgentWallet` calls, and submits them. Designed to run in a single developer session.
-- **Optional meta-tx relayer (out of scope for v1)**: developer signs each `setAgentWallet` digest off-chain, a relayer pays gas. Listed here so the on-chain design does not foreclose it; not built in the initial migration release.
+- **Hosted gasless migration (organizer-operated)**: developers sign once, a relayer pays gas and submits. Full design in the "Mass-migration option" section below. Separate deliverable from the CLI; the CLI is the trust-minimized fallback.
 - **Forward-path integration**: the extension's "register new agent" flow auto-creates the TBA and calls `setAgentWallet` in the same flow. New agents are uniquely-walleted from inception; developers never see the indirection.
 
 ### Cutover
@@ -96,6 +105,46 @@ There is no on-chain cutover. The contract upgrade enables uniqueness immediatel
 
 - Announce the upgrade window (≥90 days notice recommended) so developers can run the migration CLI before their duplicates become read-only on the wallet field.
 - Surface a "your agent has a duplicated wallet" warning in any developer-facing tooling that reads the registry, until the duplicate is resolved.
+
+## Mass-migration option (offered by ERC-8004 organizers)
+
+The per-agent flow above assumes each developer runs the CLI and pays their own gas. For the ecosystem cutover, the ERC-8004 organizers can offer a **hosted, gasless migration** that removes both of those frictions while preserving the trust model.
+
+### The hard constraint
+
+The organizers **cannot** migrate an agent unilaterally. Every `setAgentWallet` requires a signature that the target TBA's `isValidSignature` accepts, and that resolves to the NFT owner's EOA. There is deliberately no admin override in the registry — an organizer-side bypass would let a third party reassign any agent's wallet, which defeats the purpose. So a true "migrate everyone in one transaction with no developer involvement" is **rejected by design**.
+
+What organizers *can* remove is gas cost and per-step UX. The split is: **organizers provide infrastructure, gas, and coordination; developers provide one signature each.**
+
+### Design: signature-collection relayer
+
+1. **Hosted portal.** Organizers run a web portal listing every `agentId` flagged as a duplicate, grouped by owning wallet. A developer connects their wallet and sees only the agents they own.
+2. **One batched signature per developer.** The portal builds the full set of `setAgentWallet` EIP-712 digests for that developer's agents and asks them to sign **once** over a batch (an EIP-712 struct array, or a single typed message authorizing the whole set). This is the only developer action — no gas, no transaction from their wallet.
+3. **Relayer submits everything.** An organizer-funded relayer deploys the TBAs (`createAccount`, idempotent) and submits the `setAgentWallet` calls, paying all gas. Because the signatures came from the developers' EOAs, each call passes the registry's EIP-1271 check.
+4. **Progress dashboard.** The portal tracks per-agent status (pending signature / signed / TBA deployed / wallet set) so organizers can see ecosystem-wide migration progress and target reminders at developers who haven't signed.
+
+### Why per-developer signatures don't need to be 1:1 with agents
+
+A developer with N agents signs **one** batched EIP-712 payload covering all N. The relayer expands that into N on-chain `setAgentWallet` calls. So the human effort is one signature per *developer*, not per *agent* — which is what makes "mass" migration tractable for the organizers to drive.
+
+### What the organizers must operate
+
+| Piece | Responsibility |
+|---|---|
+| Duplicate scanner | Index the registry, list all duplicate `agentId`s and their owners, expose per-owner groupings to the portal |
+| Migration portal | Wallet connect, show a developer their duplicates, build batched EIP-712 digest, collect one signature |
+| Relayer service | Funded hot wallet; deploys TBAs and submits `setAgentWallet`; retries, nonce management, gas policy |
+| Progress dashboard | Ecosystem-wide migration status; drives reminder outreach |
+
+### Relationship to the self-service CLI
+
+The hosted option and the self-service CLI share the same on-chain mechanics (derive TBA → deploy → developer signs → relayer/developer submits). The CLI is the fallback for developers who prefer to self-custody the whole flow or don't trust an organizer-run relayer; the portal is the low-friction default for the long tail. Both must exist — the CLI is the trust-minimized path, the portal is the convenience path.
+
+### Open questions for the mass-migration option
+
+- **Signature scheme for the batch.** A single EIP-712 message authorizing a set, vs. an array of per-agent signed digests. The former is one signature but requires the registry (or a migration helper contract) to accept a batch authorization; the latter works with the registry as-is but the wallet signs N digests in one prompt. Leaning toward a **migration helper contract** that verifies one batch signature and fans out `setAgentWallet` calls — needs design.
+- **Relayer trust and abuse.** The relayer can only submit what developers signed, so it cannot misdirect funds, but it can choose *not* to submit. Acceptable, since the CLI is always available as the escape hatch.
+- **Whether the helper contract needs registry awareness.** If a batch-authorization helper is introduced, does it call `setAgentWallet` as an approved operator, or does each TBA signature still resolve to the developer EOA directly? This intersects with the registry's `isAuthorizedOrOwner` logic and must be settled before building the relayer.
 
 ## Components
 
@@ -107,6 +156,11 @@ There is no on-chain cutover. The contract upgrade enables uniqueness immediatel
 | Migration CLI | `python/x402/extensions/erc8004/migrate.py` (new) | Enumerate, derive, deploy-if-needed, sign, submit |
 | Forward-path integration | existing `register_agent` flow in the extension | TBA derive + deploy + `setAgentWallet` in registration |
 | Developer-facing warnings | x402 extension responses / docs | Surface duplicate-wallet status |
+| Duplicate scanner (organizer) | off-chain service | Index registry, list duplicates grouped by owner |
+| Migration portal (organizer) | web app | Wallet connect, batched EIP-712 digest, one-signature collection |
+| Relayer service (organizer) | funded hot wallet + service | Deploy TBAs, submit `setAgentWallet`, gas policy |
+| Batch-authorization helper contract (organizer, if adopted) | `contracts/erc8004/` | Verify one batch signature, fan out `setAgentWallet` calls |
+| Progress dashboard (organizer) | web app | Ecosystem migration status, reminder outreach |
 
 ## Testing
 
