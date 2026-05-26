@@ -97,6 +97,44 @@ class InMemoryUploader:
         return uri
 
 
+class PinataUploader:
+    """Content-addressed uploader backed by the Pinata V3 file API.
+
+    Posts to POST https://uploads.pinata.cloud/v3/files with Bearer auth.
+    Returns an ipfs:// URI; the resulting CID is also kept on `last_cid`.
+    """
+
+    UPLOAD_URL = "https://uploads.pinata.cloud/v3/files"
+
+    def __init__(
+        self,
+        jwt: str,
+        network: str = "public",
+        name: str = "x402-erc8004-feedback.json",
+        timeout: float = 60.0,
+    ) -> None:
+        self._jwt = jwt
+        self._network = network
+        self._name = name
+        self._timeout = timeout
+        self.last_cid: str | None = None
+
+    def upload(self, content: bytes) -> str:
+        import httpx
+
+        resp = httpx.post(
+            self.UPLOAD_URL,
+            headers={"Authorization": f"Bearer {self._jwt}"},
+            files={"file": (self._name, content, "application/json")},
+            data={"network": self._network, "name": self._name},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        cid = resp.json()["data"]["cid"]
+        self.last_cid = cid
+        return f"ipfs://{cid}"
+
+
 class ERCFeedbackClient:
     """Client-side helper for building, publishing, and submitting feedback."""
 

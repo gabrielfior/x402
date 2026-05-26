@@ -57,6 +57,40 @@ def test_in_memory_uploader_returns_uri_and_keeps_bytes() -> None:
     assert up.store[uri] == b'{"a":1}'
 
 
+def test_pinata_uploader_posts_and_returns_ipfs_uri(monkeypatch) -> None:
+    from x402.extensions.erc8004.client import PinataUploader
+
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"data": {"cid": "bafkreitestcid"}}
+
+    def fake_post(url, headers=None, files=None, data=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["files"] = files
+        captured["data"] = data
+        return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    up = PinataUploader(jwt="TESTJWT")
+    uri = up.upload(b'{"a":1}')
+
+    assert uri == "ipfs://bafkreitestcid"
+    assert up.last_cid == "bafkreitestcid"
+    assert captured["url"] == "https://uploads.pinata.cloud/v3/files"
+    assert captured["headers"]["Authorization"] == "Bearer TESTJWT"
+    assert captured["data"]["network"] == "public"
+    assert captured["files"]["file"][1] == b'{"a":1}'
+
+
 def test_build_and_publish_sets_uri_and_hash() -> None:
     client = ERCFeedbackClient.__new__(ERCFeedbackClient)
     client._config = _config()
