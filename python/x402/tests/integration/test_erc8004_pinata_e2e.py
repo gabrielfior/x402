@@ -38,6 +38,7 @@ from x402.extensions.erc8004 import (
     verify_feedback,
     verify_settlement,
 )
+from x402.extensions.erc8004.client import REPUTATION_ABI
 from x402.schemas.payments import PaymentPayload, PaymentRequirements
 
 # Anvil dev account #0 (well-known key, pre-funded on a fresh Anvil).
@@ -240,11 +241,29 @@ def test_real_settlement_signature_upload_and_feedback(anvil) -> None:
     # --- REAL on-chain giveFeedback on Anvil ---
     onchain_tx = client.submit_feedback_to_registry(params)
     fb_receipt = w3.eth.wait_for_transaction_receipt(onchain_tx)
-    print(f"[e2e] giveFeedback tx: {onchain_tx} (status={fb_receipt['status']})")
     assert fb_receipt["status"] == 1
     calldata = bytes(fb_receipt["logs"][0]["data"])
     assert feedback_hash in calldata
     assert uploader.last_cid.encode() in calldata
+
+    # Pull the executed tx back from Anvil and decode it, showing it points at
+    # the new IPFS entry.
+    tx = w3.eth.get_transaction(onchain_tx)
+    decoder = w3.eth.contract(abi=REPUTATION_ABI)
+    _, args = decoder.decode_function_input(tx["input"])
+    print("\n[e2e] ===== on-chain feedback transaction (Anvil) =====")
+    print(f"[e2e]   txHash:        {onchain_tx}")
+    print(f"[e2e]   status:        {fb_receipt['status']} (block {fb_receipt['blockNumber']})")
+    print(f"[e2e]   from (client): {tx['from']}")
+    print(f"[e2e]   to (registry): {tx['to']}")
+    print(f"[e2e]   giveFeedback.agentId:      {args['agentId']}")
+    print(f"[e2e]   giveFeedback.value:        {args['value']}")
+    print(f"[e2e]   giveFeedback.feedbackURI:  {args['feedbackURI']}")
+    print(f"[e2e]   giveFeedback.feedbackHash: 0x{args['feedbackHash'].hex()}")
+    print(f"[e2e]   -> resolves to IPFS:       https://{uploader.last_cid}.ipfs.inbrowser.link/")
+    print("[e2e] ================================================")
+    assert args["feedbackURI"] == uri == f"ipfs://{uploader.last_cid}"
+    assert args["feedbackHash"] == feedback_hash
 
     # --- full off-chain verification against the real chain state ---
     assert verify_settlement(w3, artifact) is True
