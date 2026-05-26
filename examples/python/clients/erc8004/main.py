@@ -24,20 +24,11 @@ from __future__ import annotations
 
 import json
 import os
-import pathlib
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-# Prefer the in-repo source `x402` package (python/x402) over any stale installed
-# copy, and drop the package dir / cwd from sys.path so x402 subpackages aren't
-# importable as top-level modules. Lets this run via `uv run python` from any cwd.
-_PYTHON_DIR = pathlib.Path(__file__).resolve().parents[4] / "python"  # repo_root/python
-_PKG_DIR = _PYTHON_DIR / "x402"
-sys.path = [p for p in sys.path if pathlib.Path(p or ".").resolve() != _PKG_DIR]
-sys.path.insert(0, str(_PYTHON_DIR))
 
 from eth_account import Account
 from web3 import Web3

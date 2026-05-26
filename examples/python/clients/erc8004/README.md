@@ -39,8 +39,16 @@ artifact to **real IPFS via Pinata**, and submits `giveFeedback` **on-chain**.
 
 ### Run
 
+One-time setup — install the SDK into the project venv (editable):
+
 ```bash
 cd python/x402
+uv pip install -e .
+```
+
+Then run the demo:
+
+```bash
 uv run python ../../examples/python/clients/erc8004/main.py
 ```
 
