@@ -1,6 +1,13 @@
 """Real E2E: upload feedback artifact to IPFS via Pinata, then submit
 ReputationRegistry.giveFeedback on a local Anvil instance.
 
+Realistic flow:
+- a real ERC-20 settlement transfer on Anvil (real txHash, real Transfer log)
+- a real agent-signed InteractionReceipt embedded in the artifact
+- artifact uploaded to real IPFS (Pinata), CID printed
+- giveFeedback submitted on-chain (real tx)
+- full off-chain verification (verify_feedback -> TrustTier.FULL)
+
 Requires:
 - `anvil` on PATH (Foundry)
 - PINATA_JWT in the repo-root .env (or environment)
@@ -10,6 +17,7 @@ Run it explicitly (note -s so the CID prints to your console):
     cd python/x402 && uv run pytest tests/integration/test_erc8004_pinata_e2e.py -v -s -m integration
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -25,18 +33,43 @@ from x402.extensions.erc8004 import (
     ERCFeedbackClient,
     FeedbackParams,
     PinataUploader,
-    verify_integrity,
+    TrustTier,
+    build_artifact,
+    compute_interaction_hash,
+    sign_interaction_receipt,
+    verify_feedback,
+    verify_settlement,
 )
 from x402.schemas.payments import PaymentPayload, PaymentRequirements
 
 # Anvil dev account #0 (well-known key, pre-funded on a fresh Anvil).
 ANVIL_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
-# Minimal "registry" runtime: log full calldata (LOG0) then return success.
-# Lets any selector (incl. giveFeedback) succeed and makes the calldata
-# inspectable on-chain. Deploy bytecode = constructor that returns the runtime.
-#   runtime:  CALLDATACOPY(0,0,size); LOG0(0,size); RETURN(0,0)
+# --- Hand-assembled mock contracts (no solc needed) ---
+
+# ReputationRegistry: LOG0(full calldata) then return success. Any selector works.
 MOCK_REGISTRY_DEPLOY = "0x600f80600b6000396000f3366000600037366000a060006000f3"
+
+# ERC-20-ish token: on any call, emit Transfer(caller, calldata[4:36], calldata[36:68])
+# i.e. LOG3 with topic0=keccak(Transfer(address,address,uint256)), topic1=CALLER,
+# topic2=`to` arg, data=`amount` arg. Returns success.
+_TRANSFER_TOPIC = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+_TOKEN_RUNTIME = (
+    "60206024600037"   # CALLDATACOPY(0, 0x24, 0x20)  -> mem[0:32] = amount
+    "60043533"         # PUSH1 4; CALLDATALOAD; CALLER -> [to, from]
+    "7f"               # PUSH32 ...
+    + _TRANSFER_TOPIC  # ... Transfer topic
+    + "60206000a3"     # PUSH1 0x20; PUSH1 0; LOG3(0, 32, topic0, from, to)
+    + "60006000f3"     # RETURN(0, 0)
+)
+MOCK_TOKEN_DEPLOY = "0x603680600b6000396000f3" + _TOKEN_RUNTIME
+
+
+def _identity_registry_deploy(owner_addr: str) -> str:
+    """Deploy bytecode for a registry whose every call returns `owner_addr`."""
+    owner_hex = owner_addr.lower().removeprefix("0x")
+    runtime = "73" + owner_hex + "60005260206000f3"  # PUSH20 owner; MSTORE(0); RETURN(0,32)
+    return "0x601d80600b6000396000f3" + runtime
 
 
 def _load_pinata_jwt() -> str | None:
@@ -74,93 +107,154 @@ def anvil():
     proc.wait()
 
 
-def _deploy_mock_registry(w3: Web3, deployer: Account) -> str:
+def _send(w3: Web3, signer: Account, tx: dict):
     base_fee = w3.eth.get_block("latest")["baseFeePerGas"]
     tx = {
+        **tx,
         "type": 2,
         "chainId": w3.eth.chain_id,
-        "nonce": w3.eth.get_transaction_count(deployer.address),
-        "data": MOCK_REGISTRY_DEPLOY,
-        "value": 0,
-        "gas": 200000,
+        "nonce": w3.eth.get_transaction_count(signer.address),
         "maxFeePerGas": w3.eth.max_priority_fee + 2 * base_fee,
         "maxPriorityFeePerGas": w3.eth.max_priority_fee,
     }
-    signed = deployer.sign_transaction(tx)
+    signed = signer.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    assert receipt["contractAddress"], "mock registry deploy failed"
+    return w3.eth.wait_for_transaction_receipt(tx_hash)
+
+
+def _deploy(w3: Web3, signer: Account, bytecode: str) -> str:
+    receipt = _send(w3, signer, {"data": bytecode, "value": 0, "gas": 300000})
+    assert receipt["contractAddress"], "deploy failed"
     return receipt["contractAddress"]
 
 
+def _transfer(w3: Web3, signer: Account, token: str, to: str, amount: int) -> str:
+    """ERC-20 transfer(to, amount); returns the real settlement tx hash."""
+    calldata = (
+        bytes.fromhex("a9059cbb")
+        + bytes.fromhex(to.lower().removeprefix("0x")).rjust(32, b"\x00")
+        + amount.to_bytes(32, "big")
+    )
+    receipt = _send(
+        w3, signer, {"to": Web3.to_checksum_address(token), "data": "0x" + calldata.hex(), "value": 0, "gas": 200000}
+    )
+    assert receipt["status"] == 1, "settlement transfer reverted"
+    return receipt["transactionHash"].hex()
+
+
+class _CapturingPinata(PinataUploader):
+    """PinataUploader that also retains the exact bytes it uploaded."""
+
+    content: bytes = b""
+
+    def upload(self, content: bytes) -> str:
+        self.content = content
+        return super().upload(content)
+
+
 @pytest.mark.integration
-def test_real_pinata_upload_then_onchain_feedback(anvil) -> None:
+def test_real_settlement_signature_upload_and_feedback(anvil) -> None:
     jwt = _load_pinata_jwt()
     if not jwt:
         pytest.skip("PINATA_JWT not set (.env or environment)")
 
     w3 = Web3(Web3.HTTPProvider(anvil))
-    signer = Account.from_key(ANVIL_KEY)
+    chain_id = w3.eth.chain_id
+    payer = Account.from_key(ANVIL_KEY)        # client / payer
+    agent = Account.create()                   # agent owner key (signs the receipt)
 
-    registry_addr = _deploy_mock_registry(w3, signer)
-    print(f"\n[e2e] mock ReputationRegistry deployed at {registry_addr}")
+    # --- deploy mock contracts ---
+    token = _deploy(w3, payer, MOCK_TOKEN_DEPLOY)
+    identity_registry = _deploy(w3, payer, _identity_registry_deploy(agent.address))
+    reputation_registry = _deploy(w3, payer, MOCK_REGISTRY_DEPLOY)
+    print(f"\n[e2e] token={token}")
+    print(f"[e2e] identityRegistry={identity_registry} (ownerOf -> {agent.address})")
+    print(f"[e2e] reputationRegistry={reputation_registry}")
 
-    config = ERC8004Config(
-        network=f"eip155:{w3.eth.chain_id}",
-        reputation_registry=registry_addr,
-        identity_registry="0x" + "00" * 20,
-        rpc_url=anvil,
-    )
-    client = ERCFeedbackClient(config, signer)
+    pay_to = agent.address  # agent is paid; ownerOf(agentId) == payTo
+    amount = 1_000_000
+
+    # --- REAL settlement transfer (real txHash + Transfer log) ---
+    settlement_tx = _transfer(w3, payer, token, pay_to, amount)
+    if not settlement_tx.startswith("0x"):
+        settlement_tx = "0x" + settlement_tx
+    print(f"[e2e] settlement txHash={settlement_tx}")
 
     requirements = PaymentRequirements(
         scheme="exact",
-        network=f"eip155:{w3.eth.chain_id}",
-        asset="0x" + "01" * 20,
-        amount="1000000",
-        pay_to="0x" + "03" * 20,
+        network=f"eip155:{chain_id}",
+        asset=Web3.to_checksum_address(token),
+        amount=str(amount),
+        pay_to=Web3.to_checksum_address(pay_to),
         max_timeout_seconds=60,
     )
     payload = PaymentPayload(payload={"sig": "0xdeadbeef"}, accepted=requirements)
-    params = FeedbackParams(agent_id=42, value=95, tag1="x402", tag2="weather", endpoint="/weather")
+    request = {"method": "GET", "url": "https://example.com/weather", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32}
+    response = {"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32}
 
-    # ---- Real IPFS upload via Pinata ----
-    uploader = PinataUploader(jwt=jwt)
+    # --- REAL agent signature: server-side InteractionReceipt over {version, settlement} ---
+    prelim = build_artifact(
+        requirements=requirements,
+        payment_payload=payload,
+        tx_hash=settlement_tx,
+        payer=payer.address,
+        payment_method="eip3009",
+        request=request,
+        response=response,
+        feedback={},
+    )
+    interaction_hash = compute_interaction_hash(prelim.to_dict())
+    receipt = sign_interaction_receipt(
+        agent, chain_id, bytes.fromhex(settlement_tx.removeprefix("0x")), interaction_hash
+    )
+    print(f"[e2e] agent receipt signed by {agent.address}")
+
+    # --- build + REAL IPFS upload (Pinata) ---
+    config = ERC8004Config(
+        network=f"eip155:{chain_id}",
+        reputation_registry=reputation_registry,
+        identity_registry=identity_registry,
+        rpc_url=anvil,
+    )
+    client = ERCFeedbackClient(config, payer)
+    params = FeedbackParams(agent_id=42, value=95, tag1="x402", tag2="weather", endpoint="/weather")
+    uploader = _CapturingPinata(jwt=jwt)
+
     uri, feedback_hash, params = client.build_and_publish_artifact(
         requirements=requirements,
         payment_payload=payload,
-        tx_hash="0x" + "ab" * 32,
-        payer=signer.address,
+        tx_hash=settlement_tx,
+        payer=payer.address,
         payment_method="eip3009",
-        request={"method": "GET", "url": "https://example.com/weather", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
-        response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
+        request=request,
+        response=response,
         params=params,
         uploader=uploader,
-        receipt=None,
+        receipt=receipt,
     )
-
-    print(f"[e2e] uploaded artifact to IPFS")
     print(f"[e2e] CID:          {uploader.last_cid}")
     print(f"[e2e] feedbackURI:  {uri}")
     print(f"[e2e] feedbackHash: 0x{feedback_hash.hex()}")
-    print(f"[e2e] gateway:      https://gateway.pinata.cloud/ipfs/{uploader.last_cid}")
+    print(f"[e2e] gateway:      https://{uploader.last_cid}.ipfs.inbrowser.link/")
 
-    assert uploader.last_cid, "no CID returned by Pinata"
-    assert uri == f"ipfs://{uploader.last_cid}"
+    assert uploader.last_cid
+    artifact = json.loads(uploader.content)
+    assert artifact["settlement"]["txHash"] == settlement_tx
+    assert artifact["interaction"]["response"]["agentSignature"] is not None
 
-    # ---- Real on-chain submission on Anvil ----
+    # --- REAL on-chain giveFeedback on Anvil ---
     onchain_tx = client.submit_feedback_to_registry(params)
-    receipt = w3.eth.wait_for_transaction_receipt(onchain_tx)
-    print(f"[e2e] giveFeedback tx: {onchain_tx} (status={receipt['status']})")
+    fb_receipt = w3.eth.wait_for_transaction_receipt(onchain_tx)
+    print(f"[e2e] giveFeedback tx: {onchain_tx} (status={fb_receipt['status']})")
+    assert fb_receipt["status"] == 1
+    calldata = bytes(fb_receipt["logs"][0]["data"])
+    assert feedback_hash in calldata
+    assert uploader.last_cid.encode() in calldata
 
-    assert receipt["status"] == 1, "on-chain giveFeedback reverted"
-    assert receipt["to"] and Web3.to_checksum_address(receipt["to"]) == Web3.to_checksum_address(registry_addr)
+    # --- full off-chain verification against the real chain state ---
+    assert verify_settlement(w3, artifact) is True
+    tier = verify_feedback(w3, identity_registry, uploader.content, feedback_hash, artifact)
+    print(f"[e2e] verify_feedback -> {tier.name}")
+    assert tier == TrustTier.FULL
 
-    # The mock logged the full calldata; confirm the CID + feedbackHash are in it.
-    assert receipt["logs"], "no log emitted by registry"
-    calldata = bytes(receipt["logs"][0]["data"])
-    assert feedback_hash in calldata, "feedbackHash not found in on-chain calldata"
-    assert uploader.last_cid.encode() in calldata, "CID (feedbackURI) not found in on-chain calldata"
-
-    print("[e2e] verified: CID + feedbackHash present in on-chain giveFeedback calldata")
     print(f"\n>>> IPFS CID: {uploader.last_cid}\n")
