@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 EXTENSION_KEY = "erc8004"
+ARTIFACT_VERSION = "x402-erc8004/1"
 
 
 class ERC8004ExtensionInfo(BaseModel):
@@ -30,8 +31,8 @@ class ERC8004Config(BaseModel):
     """Chain-specific config for ERC-8004 extension."""
 
     network: str
-    feedback_gateway: str
     reputation_registry: str
+    identity_registry: str
     rpc_url: str
     agent_id: int | None = None
 
@@ -53,32 +54,53 @@ class FeedbackParams(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class FeedbackTicket(BaseModel):
-    """Off-chain signed ticket proving payment settlement."""
+class InteractionReceipt(BaseModel):
+    """Agent-signed attestation over a paid interaction (optional).
 
-    settlement_tx_hash: bytes
-    payer: str
-    agent_id: int
-    nonce: int
+    Signed by IdentityRegistry.ownerOf(agentId). Returned by the server in the
+    X-X402-Interaction-Receipt header and embedded by the client into the
+    artifact at interaction.response.agentSignature.
+    """
+
+    tx_hash: bytes
+    interaction_hash: bytes
+    chain_id: int
     signature: bytes
 
     model_config = {"extra": "allow"}
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "settlementTxHash": "0x" + self.settlement_tx_hash.hex(),
-            "payer": self.payer,
-            "agentId": self.agent_id,
-            "nonce": self.nonce,
+            "txHash": "0x" + self.tx_hash.hex(),
+            "interactionHash": "0x" + self.interaction_hash.hex(),
+            "chainId": self.chain_id,
             "signature": "0x" + self.signature.hex(),
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> FeedbackTicket:
+    def from_dict(cls, data: dict[str, Any]) -> InteractionReceipt:
         return cls(
-            settlement_tx_hash=bytes.fromhex(data["settlementTxHash"].removeprefix("0x")),
-            payer=data["payer"],
-            agent_id=data["agentId"],
-            nonce=data["nonce"],
+            tx_hash=bytes.fromhex(data["txHash"].removeprefix("0x")),
+            interaction_hash=bytes.fromhex(data["interactionHash"].removeprefix("0x")),
+            chain_id=int(data["chainId"]),
             signature=bytes.fromhex(data["signature"].removeprefix("0x")),
         )
+
+
+class FeedbackArtifact(BaseModel):
+    """Canonical off-chain feedback artifact hosted at feedbackURI."""
+
+    version: str = ARTIFACT_VERSION
+    settlement: dict[str, Any]
+    interaction: dict[str, Any]
+    feedback: dict[str, Any]
+
+    model_config = {"extra": "allow"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "settlement": self.settlement,
+            "interaction": self.interaction,
+            "feedback": self.feedback,
+        }

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import secrets
 from typing import Any
 
-from eth_account import Account
-from eth_utils import keccak, to_checksum_address
 from x402.schemas.extensions import ResourceServerExtension
 from x402.schemas.hooks import ServerPaymentRequiredContext, SettleResultContext
 
+from .artifact import build_artifact, compute_interaction_hash, sign_interaction_receipt
 from .schema import declare_erc8004_extension, erc8004_schema
-from .types import ERC8004Config, EXTENSION_KEY, FeedbackTicket
+from .types import ERC8004Config, EXTENSION_KEY
 
 
 def create_erc8004_resource_server_extension(
@@ -20,13 +18,9 @@ def create_erc8004_resource_server_extension(
 ) -> ResourceServerExtension:
     """Create ERC-8004 server extension.
 
-    Enriches PaymentRequired with extensions["erc8004"].agentId.
-    Signs an EIP-712 ticket in enrich_settlement_response.
-
-    Args:
-        config: Chain and contract addresses.
-        signer: Anything with a `.sign_message(message_hash)` method or an
-            eth_account LocalAccount. If None, no tickets are signed.
+    Declares agentId in PaymentRequired. On settlement, if a signer is provided,
+    returns a signed InteractionReceipt attesting to the paid interaction. The
+    receipt is optional: clients can still submit feedback without it.
     """
     agent_id = config.agent_id
     if agent_id is None:
@@ -41,78 +35,43 @@ def create_erc8004_resource_server_extension(
             return declaration
 
         def enrich_payment_required_response(
-            self,
-            declaration: Any,
-            context: ServerPaymentRequiredContext,
+            self, declaration: Any, context: ServerPaymentRequiredContext
         ) -> dict[str, Any] | None:
             return declare_erc8004_extension(agent_id)
 
         def enrich_settlement_response(
-            self,
-            declaration: Any,
-            context: SettleResultContext,
+            self, declaration: Any, context: SettleResultContext
         ) -> dict[str, Any] | None:
             if signer is None:
                 return None
-
             result = context.result
-            if not result.success:
+            if not result.success or not result.transaction or not result.payer:
                 return None
 
-            tx_hash_str = result.transaction
-            if not tx_hash_str:
-                return None
+            requirements = context.requirements
+            tx_hash = result.transaction
+            chain_id = int(requirements.network.split(":")[1])
 
-            payer = result.payer
-            if not payer:
-                return None
-
-            tx_hash = bytes.fromhex(tx_hash_str.removeprefix("0x"))
-            payer = to_checksum_address(payer)
-            nonce = secrets.randbits(256)
-
-            digest = keccak(
-                b"\x19\x01"
-                + _encode_chain_id(context.requirements.network)
-                + tx_hash
-                + bytes.fromhex(payer.removeprefix("0x"))
-                + _encode_uint256(agent_id)
-                + _encode_uint256(nonce)
+            artifact = build_artifact(
+                requirements=requirements,
+                payment_payload=context.payment_payload,
+                tx_hash=tx_hash,
+                payer=result.payer,
+                payment_method=_payment_method(requirements),
+                request={},
+                response={},
+                feedback={},
             )
+            interaction_hash = compute_interaction_hash(artifact.to_dict())
+            tx_hash_bytes = bytes.fromhex(tx_hash.removeprefix("0x"))
+            receipt = sign_interaction_receipt(signer, chain_id, tx_hash_bytes, interaction_hash)
 
-            if hasattr(signer, "sign_message"):
-                from eth_account.messages import encode_defunct
-                sig = signer.sign_message(encode_defunct(digest))
-            elif hasattr(signer, "signHash"):
-                sig = signer.signHash(digest)
-            else:
-                raise TypeError(
-                    "signer must have sign_message or signHash method"
-                )
-
-            ticket = FeedbackTicket(
-                settlement_tx_hash=tx_hash,
-                payer=payer,
-                agent_id=agent_id,
-                nonce=nonce,
-                signature=sig.signature if hasattr(sig, "signature") else sig,
-            )
-
-            return {
-                "info": {"ticket": ticket.to_dict()},
-                "schema": erc8004_schema,
-            }
+            return {"info": {"receipt": receipt.to_dict()}, "schema": erc8004_schema}
 
     return ERC8004ResourceServerExtension()
 
 
-def _encode_chain_id(network: str) -> bytes:
-    parts = network.split(":")
-    if len(parts) != 2:
-        raise ValueError(f"invalid network format: {network}")
-    chain_id = int(parts[1])
-    return chain_id.to_bytes(32, "big")
-
-
-def _encode_uint256(value: int) -> bytes:
-    return value.to_bytes(32, "big")
+def _payment_method(requirements: Any) -> str:
+    """Best-effort scheme tag for the artifact (informational only)."""
+    extra = getattr(requirements, "extra", {}) or {}
+    return extra.get("paymentMethod", requirements.scheme)

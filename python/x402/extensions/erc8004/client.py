@@ -2,16 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Any
+import secrets
+from typing import Any, Protocol
 
-from eth_account import Account
-from eth_utils import keccak, to_checksum_address
+from eth_utils import to_checksum_address
 from web3 import Web3
 from x402.schemas.extensions import ClientExtension
-from x402.schemas.payments import PaymentPayload, PaymentRequired
+from x402.schemas.payments import PaymentPayload, PaymentRequired, PaymentRequirements
 
+from .artifact import build_artifact, canonical_bytes, compute_feedback_hash
 from .schema import erc8004_schema
-from .types import ERC8004Config, EXTENSION_KEY, FeedbackParams, FeedbackTicket
+from .types import (
+    ERC8004Config,
+    EXTENSION_KEY,
+    FeedbackParams,
+    InteractionReceipt,
+)
+
+REPUTATION_ABI = [
+    {
+        "inputs": [
+            {"name": "agentId", "type": "uint256"},
+            {"name": "value", "type": "int128"},
+            {"name": "valueDecimals", "type": "uint8"},
+            {"name": "tag1", "type": "string"},
+            {"name": "tag2", "type": "string"},
+            {"name": "endpoint", "type": "string"},
+            {"name": "feedbackURI", "type": "string"},
+            {"name": "feedbackHash", "type": "bytes32"},
+        ],
+        "name": "giveFeedback",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    }
+]
 
 
 def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | None:
@@ -22,22 +47,17 @@ def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | 
     if not ext:
         return None
     info = ext.get("info") if isinstance(ext, dict) else getattr(ext, "info", None)
-    if not info:
-        return None
-    return info
+    return info or None
 
 
 def echo_erc8004_in_payment_payload(
-    payment_payload: PaymentPayload,
-    payment_required: PaymentRequired,
+    payment_payload: PaymentPayload, payment_required: PaymentRequired
 ) -> PaymentPayload:
     """Echo the erc8004 extension into PaymentPayload per x402 v2 spec."""
     if not payment_required.extensions or EXTENSION_KEY not in payment_required.extensions:
         return payment_payload
-
     ext = payment_required.extensions[EXTENSION_KEY]
     info = ext.get("info") if isinstance(ext, dict) else getattr(ext, "info", {})
-
     extensions = dict(payment_payload.extensions or {})
     extensions[EXTENSION_KEY] = {"info": dict(info), "schema": erc8004_schema}
     payment_payload.extensions = extensions
@@ -49,16 +69,36 @@ class ERC8004ClientExtension(ClientExtension):
 
     key = EXTENSION_KEY
 
-    def enrich_payment_payload(
-        self,
-        payment_payload: Any,
-        payment_required: Any,
-    ) -> Any:
+    def enrich_payment_payload(self, payment_payload: Any, payment_required: Any) -> Any:
         return echo_erc8004_in_payment_payload(payment_payload, payment_required)
 
 
+class ArtifactUploader(Protocol):
+    """Pluggable storage backend for the feedback artifact.
+
+    Production implementations should use content-addressed storage
+    (IPFS/Arweave) so the URI itself commits to the content.
+    """
+
+    def upload(self, content: bytes) -> str:
+        """Upload bytes, return a resolvable URI."""
+        ...
+
+
+class InMemoryUploader:
+    """Test/dev uploader. Returns a mem:// URI and retains bytes in memory."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    def upload(self, content: bytes) -> str:
+        uri = "mem://" + secrets.token_hex(16)
+        self.store[uri] = content
+        return uri
+
+
 class ERCFeedbackClient:
-    """Client-side helper for submitting verified feedback."""
+    """Client-side helper for building, publishing, and submitting feedback."""
 
     def __init__(self, config: ERC8004Config, signer: Any) -> None:
         self._config = config
@@ -69,129 +109,87 @@ class ERCFeedbackClient:
     def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | None:
         return extract_erc8004_info(payment_required)
 
-    def check_duplicate(self, nonce: int) -> bool:
-        """Query FeedbackGateway.usedNonces(nonce)."""
-        gateway = self._w3.eth.contract(
-            address=to_checksum_address(self._config.feedback_gateway),
-            abi=[
-                {
-                    "inputs": [{"name": "", "type": "uint256"}],
-                    "name": "usedNonces",
-                    "outputs": [{"name": "", "type": "bool"}],
-                    "stateMutability": "view",
-                    "type": "function",
-                }
-            ],
-        )
-        return gateway.functions.usedNonces(nonce).call()
-
-    def submit_feedback(
+    def build_and_publish_artifact(
         self,
+        requirements: PaymentRequirements,
+        payment_payload: PaymentPayload,
+        tx_hash: str,
+        payer: str,
+        payment_method: str,
+        request: dict[str, Any],
+        response: dict[str, Any],
         params: FeedbackParams,
-        ticket: FeedbackTicket,
-        gas_limit: int = 200000,
-    ) -> str:
-        """Build and send EIP-7702 type-4 tx delegating to FeedbackGateway.
+        uploader: ArtifactUploader,
+        receipt: InteractionReceipt | None = None,
+    ) -> tuple[str, bytes, FeedbackParams]:
+        """Build the canonical artifact, embed the optional receipt, publish it.
 
-        Returns the transaction hash hex string.
+        Returns (feedbackURI, feedbackHash, updated FeedbackParams).
         """
-        gateway_addr = to_checksum_address(self._config.feedback_gateway)
-        registry_addr = to_checksum_address(self._config.reputation_registry)
+        feedback = {
+            "agentId": params.agent_id,
+            "value": params.value,
+            "valueDecimals": params.value_decimals,
+            "tag1": params.tag1,
+            "tag2": params.tag2,
+            "endpoint": params.endpoint,
+            "comment": getattr(params, "comment", ""),
+        }
+        artifact = build_artifact(
+            requirements=requirements,
+            payment_payload=payment_payload,
+            tx_hash=tx_hash,
+            payer=payer,
+            payment_method=payment_method,
+            request=request,
+            response=response,
+            feedback=feedback,
+        )
+        art_dict = artifact.to_dict()
+        if receipt is not None:
+            art_dict["interaction"]["response"]["agentSignature"] = receipt.to_dict()
 
-        gateway = self._w3.eth.contract(
-            address=gateway_addr,
-            abi=[
-                {
-                    "inputs": [
-                        {"name": "registry", "type": "address"},
-                        {
-                            "name": "params",
-                            "type": "tuple",
-                            "components": [
-                                {"name": "agentId", "type": "uint256"},
-                                {"name": "value", "type": "int128"},
-                                {"name": "valueDecimals", "type": "uint8"},
-                                {"name": "tag1", "type": "string"},
-                                {"name": "tag2", "type": "string"},
-                                {"name": "endpoint", "type": "string"},
-                                {"name": "feedbackURI", "type": "string"},
-                                {"name": "feedbackHash", "type": "bytes32"},
-                            ],
-                        },
-                        {
-                            "name": "ticket",
-                            "type": "tuple",
-                            "components": [
-                                {"name": "settlementTxHash", "type": "bytes32"},
-                                {"name": "payer", "type": "address"},
-                                {"name": "agentId", "type": "uint256"},
-                                {"name": "nonce", "type": "uint256"},
-                                {"name": "signature", "type": "bytes"},
-                            ],
-                        },
-                    ],
-                    "name": "submitFeedback",
-                    "outputs": [],
-                    "stateMutability": "nonpayable",
-                    "type": "function",
-                }
-            ],
+        feedback_hash = compute_feedback_hash(art_dict)
+        uri = uploader.upload(canonical_bytes(art_dict))
+        updated = params.model_copy(update={"feedback_uri": uri, "feedback_hash": feedback_hash})
+        return uri, feedback_hash, updated
+
+    def submit_feedback_to_registry(
+        self, params: FeedbackParams, gas_limit: int = 250000
+    ) -> str:
+        """Submit feedback directly to ReputationRegistry.giveFeedback (type-2 tx)."""
+        registry = self._w3.eth.contract(
+            address=to_checksum_address(self._config.reputation_registry), abi=REPUTATION_ABI
+        )
+        func = registry.functions.giveFeedback(
+            params.agent_id,
+            params.value,
+            params.value_decimals,
+            params.tag1,
+            params.tag2,
+            params.endpoint,
+            params.feedback_uri,
+            params.feedback_hash,
         )
 
-        func_call = gateway.functions.submitFeedback(
-            registry_addr,
-            (
-                params.agent_id,
-                params.value,
-                params.value_decimals,
-                params.tag1,
-                params.tag2,
-                params.endpoint,
-                params.feedback_uri,
-                params.feedback_hash,
-            ),
-            (
-                ticket.settlement_tx_hash,
-                ticket.payer,
-                ticket.agent_id,
-                ticket.nonce,
-                ticket.signature,
-            ),
-        )
-
-        if hasattr(self._signer, "address"):
-            sender = self._signer.address
-        elif hasattr(self._signer, "_address"):
-            sender = self._signer._address
-        else:
+        sender = getattr(self._signer, "address", None)
+        if sender is None:
             raise TypeError("signer must expose an address attribute")
 
-        tx_nonce = self._w3.eth.get_transaction_count(sender)
-
-        auth = Account.sign_authorization(
-            {
-                "chainId": self._w3.eth.chain_id,
-                "address": gateway_addr,
-                "nonce": tx_nonce + 1,
-            },
-            self._signer.key if hasattr(self._signer, "key") else self._signer,
-        )
-
+        nonce = self._w3.eth.get_transaction_count(sender)
+        base_fee = self._w3.eth.get_block("latest")["baseFeePerGas"]
         tx = {
-            "type": 4,
+            "type": 2,
             "chainId": self._w3.eth.chain_id,
-            "nonce": tx_nonce,
-            "to": sender,
+            "nonce": nonce,
+            "to": to_checksum_address(self._config.reputation_registry),
             "value": 0,
             "gas": gas_limit,
-            "data": func_call.build_transaction({"from": sender})["data"],
-            "authorizationList": [auth],
+            "data": func.build_transaction({"from": sender})["data"],
+            "maxFeePerGas": self._w3.eth.max_priority_fee + 2 * base_fee,
+            "maxPriorityFeePerGas": self._w3.eth.max_priority_fee,
         }
-
-        max_fee = self._w3.eth.max_priority_fee + (2 * self._w3.eth.get_block("latest")["baseFeePerGas"])
-        tx["maxFeePerGas"] = max_fee
-        tx["maxPriorityFeePerGas"] = self._w3.eth.max_priority_fee
-
         signed = self._signer.sign_transaction(tx)
-        tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
-        return tx_hash.hex()
+        raw = self._w3.eth.send_raw_transaction(signed.raw_transaction)
+        h = bytes(raw).hex()
+        return h if h.startswith("0x") else "0x" + h

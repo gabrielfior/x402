@@ -2,48 +2,64 @@
 
 from x402.extensions.erc8004.types import (
     ERC8004Config,
-    ERC8004ExtensionInfo,
-    ERC8004ExtensionDeclaration,
     FeedbackParams,
-    FeedbackTicket,
-    EXTENSION_KEY,
+    InteractionReceipt,
+    FeedbackArtifact,
 )
 
 
-def test_extension_key() -> None:
-    assert EXTENSION_KEY == "erc8004"
-
-
-def test_extension_info_model() -> None:
-    info = ERC8004ExtensionInfo(agent_id=42)
-    assert info.agent_id == 42
-
-
-def test_extension_declaration() -> None:
-    decl = ERC8004ExtensionDeclaration(
-        info=ERC8004ExtensionInfo(agent_id=42),
-        schema={"$schema": "https://json-schema.org/draft/2020-12/schema"},
+def test_config_no_gateway_field() -> None:
+    cfg = ERC8004Config(
+        network="eip155:8453",
+        reputation_registry="0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
+        identity_registry="0x8004A18C4f0D0307C40Bd9176E1A53569b73e6a3",
+        rpc_url="http://localhost:8545",
+        agent_id=42,
     )
-    assert decl.info.agent_id == 42
-    assert "$schema" in decl.schema_
+    assert cfg.identity_registry.startswith("0x")
+    assert "feedback_gateway" not in ERC8004Config.model_fields
 
 
 def test_feedback_params_defaults() -> None:
-    params = FeedbackParams(agent_id=42, value=95)
-    assert params.value_decimals == 0
-    assert params.tag1 == ""
-    assert params.feedback_hash == b"\x00" * 32
+    p = FeedbackParams(agent_id=42, value=90)
+    assert p.value_decimals == 0
+    assert p.feedback_uri == ""
+    assert p.feedback_hash == b"\x00" * 32
 
 
-def test_feedback_ticket_roundtrip() -> None:
-    ticket = FeedbackTicket(
-        settlement_tx_hash=b"\x01" * 32,
-        payer="0x1234567890123456789012345678901234567890",
-        agent_id=42,
-        nonce=1,
-        signature=b"\x02" * 65,
+def test_interaction_receipt_roundtrip() -> None:
+    r = InteractionReceipt(
+        tx_hash=b"\x11" * 32,
+        interaction_hash=b"\x22" * 32,
+        chain_id=8453,
+        signature=b"\x33" * 65,
     )
-    d = ticket.to_dict()
-    restored = FeedbackTicket.from_dict(d)
-    assert restored.settlement_tx_hash == ticket.settlement_tx_hash
-    assert restored.signature == ticket.signature
+    d = r.to_dict()
+    assert d["txHash"] == "0x" + "11" * 32
+    assert d["interactionHash"] == "0x" + "22" * 32
+    assert d["chainId"] == 8453
+    assert d["signature"] == "0x" + "33" * 65
+    back = InteractionReceipt.from_dict(d)
+    assert back == r
+
+
+def test_feedback_artifact_minimal() -> None:
+    art = FeedbackArtifact(
+        settlement={
+            "txHash": "0x" + "ab" * 32,
+            "chainId": "eip155:8453",
+            "scheme": "exact",
+            "paymentMethod": "eip3009",
+            "asset": "0x" + "01" * 20,
+            "payer": "0x" + "02" * 20,
+            "payTo": "0x" + "03" * 20,
+            "amount": "1000000",
+        },
+        interaction={
+            "request": {"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
+            "response": {"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32, "agentSignature": None},
+        },
+        feedback={"agentId": 42, "value": 90, "valueDecimals": 0, "tag1": "", "tag2": "", "endpoint": "", "comment": ""},
+    )
+    assert art.version == "x402-erc8004/1"
+    assert art.to_dict()["version"] == "x402-erc8004/1"
