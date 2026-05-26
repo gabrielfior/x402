@@ -4,9 +4,11 @@ x402 v2 extension for submitting verified feedback to ERC-8004 ReputationRegistr
 
 ## Architecture
 
-- **Server**: Signs an off-chain EIP-712 ticket after settlement. No on-chain interaction.
-- **Client**: Receives ticket in settlement response, submits feedback via single EIP-7702 type-4 tx.
-- **Contract**: Verifies ticket by calling `IdentityRegistry.ownerOf(agentId)`, forwards to `ReputationRegistry`.
+- **No contracts owned.** Clients submit directly to the standard ERC-8004 `ReputationRegistry`.
+- **Binding via off-chain artifact.** The client builds a canonical JSON artifact capturing `paymentRequirements`, `paymentPayload`, the response digest, and `txHash`, hashes it (keccak256) into `feedbackHash`, and uploads it to obtain `feedbackURI`.
+- **Optional agent receipt.** The server may return a signed `InteractionReceipt` (attesting to the settlement-level interaction). Its absence downgrades the trust tier but never blocks submission.
+- **Scheme-agnostic verification.** Verifiers key off the ERC-20 `Transfer` event, so EIP-3009 (USDC), Permit2, and plain ERC-20 all verify identically.
+- **Dedup off-chain** on `(payer, agentId, settlementTxHash)`, latest block wins.
 
 ## Installation
 
@@ -23,58 +25,72 @@ from eth_account import Account
 
 server = x402ResourceServer(facilitator_client)
 
-signer = Account.from_key("0x...")
+signer = Account.from_key("0x...")  # the agent owner key (IdentityRegistry.ownerOf(agentId))
 config = ERC8004Config(
-    network="eip155:1",
-    feedback_gateway="0x...",
+    network="eip155:8453",
     reputation_registry="0x8004BAa1...",
+    identity_registry="0x...",
     rpc_url="https://...",
     agent_id=42,
 )
 
+# signer is optional: with it, settlement responses carry a signed InteractionReceipt
 server.register_extension(create_erc8004_resource_server_extension(config, signer=signer))
 ```
 
 ## Client Usage
 
 ```python
-from x402.extensions.erc8004 import ERCFeedbackClient, ERC8004Config, FeedbackParams
+from x402.extensions.erc8004 import (
+    ERCFeedbackClient, ERC8004Config, FeedbackParams, InMemoryUploader, InteractionReceipt,
+)
 
 config = ERC8004Config(
-    network="eip155:1",
-    feedback_gateway="0x...",
+    network="eip155:8453",
     reputation_registry="0x8004BAa1...",
+    identity_registry="0x...",
     rpc_url="https://...",
 )
+client = ERCFeedbackClient(config, signer)
 
-feedback_client = ERCFeedbackClient(config, signer)
+# After payment: optionally parse the agent receipt from the settle response
+receipt = InteractionReceipt.from_dict(receipt_dict) if receipt_dict else None
 
-# After payment, extract ticket from settle response
-info = feedback_client.extract_erc8004_info(payment_required)
-agent_id = info["agentId"]
+params = FeedbackParams(agent_id=42, value=95, tag1="x402", tag2="weather", endpoint="/weather")
 
-# Build feedback
-params = FeedbackParams(
-    agent_id=agent_id,
-    value=95,
-    tag1="x402",
-    tag2="weather",
-    endpoint="https://example.com/weather",
+uri, feedback_hash, params = client.build_and_publish_artifact(
+    requirements=requirements,
+    payment_payload=payment_payload,
+    tx_hash=settle_tx_hash,
+    payer=signer.address,
+    payment_method="eip3009",       # or "permit2", "erc20"
+    request={"method": "GET", "url": "...", "headerDigest": "0x..", "bodyDigest": "0x.."},
+    response={"status": 200, "headerDigest": "0x..", "bodyDigest": "0x.."},
+    params=params,
+    uploader=InMemoryUploader(),    # production: an IPFS/Arweave uploader
+    receipt=receipt,
 )
 
-# Submit via EIP-7702
-tx_hash = feedback_client.submit_feedback(params, ticket)
+tx_hash = client.submit_feedback_to_registry(params)
 ```
 
-## Gas Costs
+> When a receipt is present, the `settlement` block must byte-match what the server
+> signed: pass the same `payment_method` the server derived
+> (`requirements.extra["paymentMethod"]` if set, else `requirements.scheme`) and the
+> same `payment_payload`/`requirements`. Otherwise `verify_feedback` returns
+> `TrustTier.DISPUTED` instead of `FULL`.
 
-- Single EIP-7702 type-4 tx: ~45k gas
-- Mainnet @ 20 gwei: ~$2-5
-- L2 (Base/Arbitrum): ~$0.01-0.10
+## Verification (aggregators)
+
+```python
+from x402.extensions.erc8004 import verify_feedback, dedup_feedback, TrustTier
+
+tier = verify_feedback(w3, config.identity_registry, artifact_bytes, feedback_hash, artifact_dict)
+# TrustTier.FULL / CLIENT_ONLY / DISPUTED / REJECTED
+```
 
 ## Future Work
 
-- Facilitator-signed ticket fallback
-- Unverified feedback path
+- Response-digest coverage in the interaction receipt (v2 artifact schema)
+- Content-addressed (IPFS/Arweave) uploader implementations
 - Batch submission
-- L2 deployments
