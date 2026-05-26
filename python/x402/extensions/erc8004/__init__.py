@@ -19,7 +19,10 @@ from x402.extensions.erc8004.client import (
     extract_erc8004_info,
 )
 from x402.extensions.erc8004.schema import declare_erc8004_extension, erc8004_schema
-from x402.extensions.erc8004.server import create_erc8004_resource_server_extension
+from x402.extensions.erc8004.server import (
+    create_erc8004_resource_server_extension,
+    create_interaction_receipt,
+)
 from x402.extensions.erc8004.types import (
     ARTIFACT_VERSION,
     ERC8004Config,
@@ -41,6 +44,7 @@ from x402.extensions.erc8004.verify import (
 
 __all__ = [
     "create_erc8004_resource_server_extension",
+    "create_interaction_receipt",
     "ERCFeedbackClient",
     "ERC8004ClientExtension",
     "ArtifactUploader",

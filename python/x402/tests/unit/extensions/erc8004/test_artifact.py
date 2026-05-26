@@ -75,6 +75,43 @@ def test_interaction_hash_excludes_feedback_and_agentsig() -> None:
     assert compute_feedback_hash(art1.to_dict()) != compute_feedback_hash(art2.to_dict())
 
 
+def test_interaction_hash_covers_request_and_response() -> None:
+    payload = PaymentPayload(payload={"sig": "0xdead"}, accepted=_requirements())
+    base = dict(
+        requirements=_requirements(),
+        payment_payload=payload,
+        tx_hash="0x" + "ab" * 32,
+        payer="0x" + "02" * 20,
+        payment_method="eip3009",
+        feedback={"agentId": 42, "value": 90, "valueDecimals": 0, "tag1": "", "tag2": "", "endpoint": "", "comment": ""},
+    )
+    req = {"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32}
+    art_a = build_artifact(request=req, response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32}, **base)
+    art_b = build_artifact(request=req, response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "ff" * 32}, **base)
+    # different response body digest => different interaction hash
+    assert compute_interaction_hash(art_a.to_dict()) != compute_interaction_hash(art_b.to_dict())
+
+
+def test_interaction_hash_ignores_embedded_agent_signature() -> None:
+    payload = PaymentPayload(payload={"sig": "0xdead"}, accepted=_requirements())
+    art = build_artifact(
+        requirements=_requirements(),
+        payment_payload=payload,
+        tx_hash="0x" + "ab" * 32,
+        payer="0x" + "02" * 20,
+        payment_method="eip3009",
+        request={"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
+        response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
+        feedback={"agentId": 42, "value": 90},
+    )
+    before = compute_interaction_hash(art.to_dict())
+    d = art.to_dict()
+    d["interaction"]["response"]["agentSignature"] = {"signature": "0xdeadbeef"}
+    after = compute_interaction_hash(d)
+    # embedding the agent signature must not change the signed preimage
+    assert before == after
+
+
 def test_receipt_sign_and_verify() -> None:
     agent = Account.create()
     tx_hash = b"\xab" * 32

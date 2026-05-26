@@ -116,7 +116,7 @@
                 <li><strong>No contracts owned</strong> — client calls the standard <code>ReputationRegistry.giveFeedback</code> directly; <code>FeedbackGateway</code> removed</li>
                 <li><strong>Canonical artifact</strong> — JSON binding <code>paymentRequirements + paymentPayload + responseDigest + txHash</code>, committed via <code>feedbackHash</code> / <code>feedbackURI</code></li>
                 <li><strong>Scheme-agnostic</strong> — verification keys off the universal ERC-20 <code>Transfer</code> event (EIP-3009, Permit2, plain ERC-20 all work)</li>
-                <li><strong>Optional agent receipt</strong> — server signs an <code>InteractionReceipt</code> over <code>{version, settlement}</code>; absence lowers trust tier, never blocks</li>
+                <li><strong>Optional agent receipt</strong> — server signs an <code>InteractionReceipt</code> over <code>{version, settlement, request, response}</code> (digests) and returns it in the <code>X-X402-Interaction-Receipt</code> header; commits the agent to <em>what it served</em>; absence lowers trust tier, never blocks</li>
                 <li><strong>Direct submission</strong> — plain type-2 tx; <code>msg.sender</code> on the registry <em>is</em> the payer (correct attribution, no EIP-7702)</li>
                 <li><strong>Off-chain dedup</strong> — aggregators key on <code>(payer, agentId, txHash)</code>, latest block wins</li>
                 <li><strong>Censorship-resistant</strong> — no gatekeeping contract; the agent cannot block feedback submission</li>
@@ -159,7 +159,7 @@
             <div><div class="row-num purple">5</div></div>
             <div class="row-content">
                 <div class="row-arrow">Server &rarr; Client <span class="row-badge new">new</span></div>
-                <div class="row-desc"><code>200 OK</code> + <code>PAYMENT-RESPONSE</code> (settlement <code>txHash</code>, payer). <em>Optionally</em>, if the agent owner key is configured, the server adds a signed <code>InteractionReceipt</code> via <code>enrich_settlement_response</code> &mdash; signature over <code>keccak256("x402-erc8004-receipt" + chainId + txHash + interactionHash)</code>, where <code>interactionHash = keccak256(canonical({version, settlement}))</code>.</div>
+                <div class="row-desc"><code>200 OK</code> + <code>PAYMENT-RESPONSE</code> (settlement <code>txHash</code>, payer). <em>Optionally</em>, once the response is known, the server signs an <code>InteractionReceipt</code> at the HTTP layer (<code>create_interaction_receipt</code>) and returns it in the <code>X-X402-Interaction-Receipt</code> header &mdash; signature over <code>keccak256("x402-erc8004-receipt" + chainId + txHash + interactionHash)</code>, where <code>interactionHash = keccak256(canonical({version, settlement, request, response}))</code>. This commits the agent to the exact request it answered and response it returned.</div>
             </div>
         </div>
         <div class="row new">
@@ -192,8 +192,8 @@
         <div class="row new">
             <div><div class="row-num purple">A</div></div>
             <div class="row-content">
-                <div class="row-arrow"><code>interaction_hash</code> &mdash; agent-signed <span class="row-badge new">v1</span></div>
-                <div class="row-desc"><code>keccak256(canonical({ version, settlement }))</code>. Server and client compute the identical preimage, so the receipt verifies. Excludes the client's <code>feedback</code> and the request/response digests (the agent doesn't have them at settlement time in v1).</div>
+                <div class="row-arrow"><code>interaction_hash</code> &mdash; agent-signed <span class="row-badge new">new</span></div>
+                <div class="row-desc"><code>keccak256(canonical({ version, settlement, request, response }))</code>, where <code>response</code> excludes its own <code>agentSignature</code> (no signing over itself). Covers the request the agent answered and the response it produced (digests) &mdash; so the agent cannot later repudiate its output. Excludes only the client's <code>feedback</code> (the rating is the client's opinion). Server and client compute the identical preimage, so the receipt verifies.</div>
             </div>
         </div>
         <div class="row new">
@@ -251,7 +251,7 @@
             <div class="arch-item"><span class="tag std">x402</span><h4>Any ERC-20 (Permit2)</h4><p>Permit2 signature transfer via x402. Same Transfer event &mdash; verification is identical.</p><div class="file">x402 SDK</div></div>
             <div class="arch-item"><span class="tag std">x402</span><h4>Facilitator (verify/settle)</h4><p>x402Facilitator. Verifies signatures, simulates, settles on-chain.</p><div class="file">x402 SDK</div></div>
             <div class="arch-item new"><span class="tag new">new</span><h4>artifact.py</h4><p>Canonical JSON encoding, dual-hash (interaction + feedback), interaction-receipt sign/verify.</p><div class="file">extensions/erc8004/artifact.py</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>server.py</h4><p>Declares agentId; optionally signs an InteractionReceipt on settlement. No on-chain calls.</p><div class="file">extensions/erc8004/server.py</div></div>
+            <div class="arch-item new"><span class="tag new">new</span><h4>server.py</h4><p>Declares agentId; create_interaction_receipt signs over request+response at the HTTP layer. No on-chain calls.</p><div class="file">extensions/erc8004/server.py</div></div>
             <div class="arch-item new"><span class="tag new">new</span><h4>client.py</h4><p>build_and_publish_artifact + submit_feedback_to_registry (type-2). Pluggable ArtifactUploader.</p><div class="file">extensions/erc8004/client.py</div></div>
             <div class="arch-item new"><span class="tag new">new</span><h4>verify.py</h4><p>Transfer-event settlement check, agent binding, trust tier, off-chain dedup.</p><div class="file">extensions/erc8004/verify.py</div></div>
             <div class="arch-item new"><span class="tag new">new</span><h4>On-chain reputation</h4><p>Standard mainnet ReputationRegistry / IdentityRegistry. Permissionless giveFeedback &mdash; no custom contract.</p><div class="file">ERC-8004 (0x8004BAa1&hellip;)</div></div>

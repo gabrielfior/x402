@@ -34,9 +34,7 @@ from x402.extensions.erc8004 import (
     FeedbackParams,
     PinataUploader,
     TrustTier,
-    build_artifact,
-    compute_interaction_hash,
-    sign_interaction_receipt,
+    create_interaction_receipt,
     verify_feedback,
     verify_settlement,
 )
@@ -192,22 +190,19 @@ def test_real_settlement_signature_upload_and_feedback(anvil) -> None:
     request = {"method": "GET", "url": "https://example.com/weather", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32}
     response = {"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32}
 
-    # --- REAL agent signature: server-side InteractionReceipt over {version, settlement} ---
-    prelim = build_artifact(
+    # --- REAL agent signature: server signs the receipt at the HTTP layer over
+    #     {version, settlement, request, response} once the response is known ---
+    receipt = create_interaction_receipt(
+        agent,
         requirements=requirements,
         payment_payload=payload,
         tx_hash=settlement_tx,
         payer=payer.address,
-        payment_method="eip3009",
         request=request,
         response=response,
-        feedback={},
+        payment_method="eip3009",
     )
-    interaction_hash = compute_interaction_hash(prelim.to_dict())
-    receipt = sign_interaction_receipt(
-        agent, chain_id, bytes.fromhex(settlement_tx.removeprefix("0x")), interaction_hash
-    )
-    print(f"[e2e] agent receipt signed by {agent.address}")
+    print(f"[e2e] agent receipt signed by {agent.address} (covers request+response)")
 
     # --- build + REAL IPFS upload (Pinata) ---
     config = ERC8004Config(

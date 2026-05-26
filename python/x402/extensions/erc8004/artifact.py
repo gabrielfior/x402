@@ -60,18 +60,29 @@ def build_artifact(
 
 
 def _interaction_core(artifact: dict[str, Any]) -> dict[str, Any]:
-    # v1: agent attests to the payment-level interaction only. Server and client
-    # both compute over {version, settlement} so the hashes match. Request/response
-    # digests are NOT covered by the agent receipt in v1 (agent lacks them at
-    # settlement time); they are still committed by feedback_hash.
+    # The agent attests to the full interaction: the settlement, the request it
+    # answered, and the response it produced (digests only). `agentSignature` is
+    # excluded so the agent never signs over its own signature. The server builds
+    # this at the HTTP layer once the response digest is known; the client embeds
+    # the identical request/response, so both sides compute the same preimage.
+    response_core = {
+        k: v
+        for k, v in artifact["interaction"]["response"].items()
+        if k != "agentSignature"
+    }
     return {
         "version": artifact["version"],
         "settlement": artifact["settlement"],
+        "request": artifact["interaction"]["request"],
+        "response": response_core,
     }
 
 
 def compute_interaction_hash(artifact: dict[str, Any]) -> bytes:
-    """keccak256 over the canonical {version, settlement} core (agent-signed)."""
+    """keccak256 over the canonical {version, settlement, request, response} core.
+
+    This is what the agent signs (response excludes its own agentSignature).
+    """
     return keccak(canonical_bytes(_interaction_core(artifact)))
 
 

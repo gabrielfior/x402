@@ -6,7 +6,7 @@ x402 v2 extension for submitting verified feedback to ERC-8004 ReputationRegistr
 
 - **No contracts owned.** Clients submit directly to the standard ERC-8004 `ReputationRegistry`.
 - **Binding via off-chain artifact.** The client builds a canonical JSON artifact capturing `paymentRequirements`, `paymentPayload`, the response digest, and `txHash`, hashes it (keccak256) into `feedbackHash`, and uploads it to obtain `feedbackURI`.
-- **Optional agent receipt.** The server may return a signed `InteractionReceipt` (attesting to the settlement-level interaction). Its absence downgrades the trust tier but never blocks submission.
+- **Optional agent receipt.** The server may sign an `InteractionReceipt` over `{version, settlement, request, response}` (digests, not raw bodies) and return it in the `X-X402-Interaction-Receipt` header. It commits the agent to *what it served*; its absence downgrades the trust tier but never blocks submission.
 - **Scheme-agnostic verification.** Verifiers key off the ERC-20 `Transfer` event, so EIP-3009 (USDC), Permit2, and plain ERC-20 all verify identically.
 - **Dedup off-chain** on `(payer, agentId, settlementTxHash)`, latest block wins.
 
@@ -19,13 +19,15 @@ pip install x402[evm]
 ## Server Usage
 
 ```python
+import json
 from x402 import x402ResourceServer
-from x402.extensions.erc8004 import create_erc8004_resource_server_extension, ERC8004Config
+from x402.extensions.erc8004 import (
+    create_erc8004_resource_server_extension, create_interaction_receipt, ERC8004Config,
+)
 from eth_account import Account
 
 server = x402ResourceServer(facilitator_client)
 
-signer = Account.from_key("0x...")  # the agent owner key (IdentityRegistry.ownerOf(agentId))
 config = ERC8004Config(
     network="eip155:8453",
     reputation_registry="0x8004BAa1...",
@@ -33,9 +35,21 @@ config = ERC8004Config(
     rpc_url="https://...",
     agent_id=42,
 )
+server.register_extension(create_erc8004_resource_server_extension(config))
 
-# signer is optional: with it, settlement responses carry a signed InteractionReceipt
-server.register_extension(create_erc8004_resource_server_extension(config, signer=signer))
+# After the handler runs and settlement completes, sign a receipt over the
+# request + response (digests) and return it in a header:
+agent_owner = Account.from_key("0x...")  # == IdentityRegistry.ownerOf(agentId)
+receipt = create_interaction_receipt(
+    agent_owner,
+    requirements=requirements,
+    payment_payload=payment_payload,
+    tx_hash=settle_result.transaction,
+    payer=settle_result.payer,
+    request={"method": "GET", "url": url, "headerDigest": h_req, "bodyDigest": b_req},
+    response={"status": 200, "headerDigest": h_resp, "bodyDigest": b_resp},
+)
+response.headers["X-X402-Interaction-Receipt"] = json.dumps(receipt.to_dict())
 ```
 
 ## Client Usage
