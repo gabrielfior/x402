@@ -1,4 +1,4 @@
-"""End-to-end test for ERC-8004 extension against Anvil Prague."""
+"""End-to-end test for the gateway-less ERC-8004 extension against Anvil."""
 
 import subprocess
 import time
@@ -11,13 +11,14 @@ from x402.extensions.erc8004 import (
     ERC8004Config,
     ERCFeedbackClient,
     FeedbackParams,
-    create_erc8004_resource_server_extension,
+    InMemoryUploader,
+    verify_integrity,
 )
+from x402.schemas.payments import PaymentPayload, PaymentRequirements
 
 
 @pytest.fixture(scope="module")
 def anvil():
-    """Start Anvil with Prague hardfork."""
     proc = subprocess.Popen(
         ["anvil", "--hardfork", "Prague", "--chain-id", "1337"],
         stdout=subprocess.PIPE,
@@ -29,48 +30,48 @@ def anvil():
     proc.wait()
 
 
-@pytest.fixture
-def w3(anvil):
-    return Web3(Web3.HTTPProvider(anvil))
+@pytest.mark.integration
+def test_artifact_published_and_integrity_holds(anvil) -> None:
+    """Build+publish an artifact and confirm the hosted bytes match feedbackHash.
 
-
-@pytest.fixture
-def accounts(w3):
-    return [Account.from_key(key) for key in [
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-    ]]
-
-
-@pytest.mark.skip(reason="requires Foundry + Anvil Prague + contract deployment")
-def test_full_flow(anvil, w3, accounts):
-    server_acct = accounts[0]
-    client_acct = Account.create()
-
-    # Fund client
-    w3.eth.send_transaction({
-        "to": client_acct.address,
-        "value": w3.to_wei(1, "ether"),
-        "from": server_acct.address,
-    })
-
-    # Deploy FeedbackGateway with mock IdentityRegistry
-    # (simplified — in real test, deploy MockIdentityRegistry + set owner)
-    # ... deploy code ...
-
+    Exercises the off-chain binding path without requiring a deployed
+    ReputationRegistry on the local chain.
+    """
+    w3 = Web3(Web3.HTTPProvider(anvil))
+    signer = Account.from_key(
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    )
     config = ERC8004Config(
-        network="eip155:1337",
-        feedback_gateway="0x...",
-        reputation_registry="0x...",
+        network=f"eip155:{w3.eth.chain_id}",
+        reputation_registry="0x" + "00" * 20,
+        identity_registry="0x" + "00" * 20,
         rpc_url=anvil,
     )
+    client = ERCFeedbackClient(config, signer)
 
-    feedback_client = ERCFeedbackClient(config, client_acct)
+    requirements = PaymentRequirements(
+        scheme="exact",
+        network=f"eip155:{w3.eth.chain_id}",
+        asset="0x" + "01" * 20,
+        amount="1000000",
+        pay_to="0x" + "03" * 20,
+        max_timeout_seconds=60,
+    )
+    payload = PaymentPayload(payload={"sig": "0xdead"}, accepted=requirements)
+    params = FeedbackParams(agent_id=42, value=90, endpoint="/weather")
+    up = InMemoryUploader()
 
-    # Test check_duplicate
-    assert not feedback_client.check_duplicate(1)
-
-    # Test submit_feedback (would need deployed contract)
-    # params = FeedbackParams(agent_id=42, value=95, ...)
-    # ticket = FeedbackTicket(...)
-    # tx_hash = feedback_client.submit_feedback(params, ticket)
-    # assert tx_hash.startswith("0x")
+    uri, feedback_hash, updated = client.build_and_publish_artifact(
+        requirements=requirements,
+        payment_payload=payload,
+        tx_hash="0x" + "ab" * 32,
+        payer=signer.address,
+        payment_method="eip3009",
+        request={"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
+        response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
+        params=params,
+        uploader=up,
+        receipt=None,
+    )
+    assert verify_integrity(up.store[uri], feedback_hash) is True
+    assert updated.feedback_uri == uri
