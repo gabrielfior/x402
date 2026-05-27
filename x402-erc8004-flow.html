@@ -244,35 +244,6 @@
 <span class="new">  Purple   = our ERC-8004 additions (extension SDK only, no contracts)</span></div>
     </section>
 
-    <section>
-        <h2>Architecture — what's x402 vs what we built</h2>
-        <div class="arch">
-            <div class="arch-item"><span class="tag std">x402</span><h4>USDC (EIP-3009)</h4><p>transferWithAuthorization. No prior approval. Emits standard ERC-20 Transfer.</p><div class="file">x402 SDK</div></div>
-            <div class="arch-item"><span class="tag std">x402</span><h4>Any ERC-20 (Permit2)</h4><p>Permit2 signature transfer via x402. Same Transfer event &mdash; verification is identical.</p><div class="file">x402 SDK</div></div>
-            <div class="arch-item"><span class="tag std">x402</span><h4>Facilitator (verify/settle)</h4><p>x402Facilitator. Verifies signatures, simulates, settles on-chain.</p><div class="file">x402 SDK</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>artifact.py</h4><p>Canonical JSON encoding, dual-hash (interaction + feedback), interaction-receipt sign/verify.</p><div class="file">extensions/erc8004/artifact.py</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>server.py</h4><p>Declares agentId; create_interaction_receipt signs over request+response at the HTTP layer. No on-chain calls.</p><div class="file">extensions/erc8004/server.py</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>client.py</h4><p>build_and_publish_artifact + submit_feedback_to_registry (type-2). Pluggable ArtifactUploader.</p><div class="file">extensions/erc8004/client.py</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>verify.py</h4><p>Transfer-event settlement check, agent binding, trust tier, off-chain dedup.</p><div class="file">extensions/erc8004/verify.py</div></div>
-            <div class="arch-item new"><span class="tag new">new</span><h4>On-chain reputation</h4><p>Standard mainnet ReputationRegistry / IdentityRegistry. Permissionless giveFeedback &mdash; no custom contract.</p><div class="file">ERC-8004 (0x8004BAa1&hellip;)</div></div>
-        </div>
-    </section>
-
-    <section>
-        <h2>What changed from the gateway design</h2>
-        <table>
-            <tr><th>Aspect</th><th>Old (FeedbackGateway)</th><th class="new">New (gateway-less)</th></tr>
-            <tr><td>Contracts owned</td><td>FeedbackGateway.sol</td><td class="new">none</td></tr>
-            <tr><td>Request&harr;feedback binding</td><td>txHash only, via on-chain ticket</td><td class="new">full artifact, committed via feedbackHash/feedbackURI</td></tr>
-            <tr><td>Submission</td><td>EIP-7702 self-call to gateway</td><td class="new">plain type-2 tx to ReputationRegistry</td></tr>
-            <tr><td>Author attribution</td><td>EIP-7702 makes msg.sender = client</td><td class="new">msg.sender = payer by construction</td></tr>
-            <tr><td>Payment schemes</td><td>implicit single tx</td><td class="new">EIP-3009 + Permit2 + any ERC-20 (Transfer event)</td></tr>
-            <tr><td>Dedup</td><td>on-chain usedSettlements (bypassable)</td><td class="new">off-chain on (payer, agentId, txHash)</td></tr>
-            <tr><td>Agent censorship</td><td>agent ticket required &mdash; can block</td><td class="new">no gatekeeper &mdash; cannot block</td></tr>
-            <tr><td>Response attestation</td><td>none</td><td class="new">optional signed InteractionReceipt (trust tier)</td></tr>
-        </table>
-    </section>
-
     <footer>
         <p>x402 ERC-8004 extension &mdash; gateway-less design &mdash; May 2026</p>
     </footer>

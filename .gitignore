@@ -51,3 +51,9 @@ REVIEW_PROMPT.md
 contracts/erc8004/cache/
 contracts/erc8004/out/
 contracts/erc8004/lib/
+
+# ERC-8004 design docs & planning notes (kept local, not part of the PR)
+docs/plans/
+specs/2026-*-erc8004-*.md
+
+**/run.sh
