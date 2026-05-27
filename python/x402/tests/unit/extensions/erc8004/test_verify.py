@@ -10,6 +10,7 @@ from x402.extensions.erc8004.verify import (
     dedup_feedback,
     verify_settlement,
 )
+from x402.mechanisms.evm.constants import X402_EXACT_PERMIT2_PROXY_ADDRESS
 
 
 def test_verify_integrity_match() -> None:
@@ -73,6 +74,41 @@ def test_verify_settlement_accepts_permit2_transfer_from_singleton() -> None:
     log = {"address": asset, "topics": topics, "data": amount.to_bytes(32, "big")}
     receipt = {"status": 1, "logs": [log]}
     tx = {"to": asset}
+
+    w3 = MagicMock()
+    w3.eth.chain_id = 8453
+    w3.eth.get_transaction_receipt.return_value = receipt
+    w3.eth.get_transaction.return_value = tx
+
+    artifact = {
+        "settlement": {
+            "chainId": "eip155:8453",
+            "txHash": txh,
+            "asset": asset,
+            "payer": payer,
+            "payTo": pay_to,
+            "amount": str(amount),
+            "paymentMethod": "permit2",
+            "paymentRequirements": {"extra": {}},
+        }
+    }
+    assert verify_settlement(w3, artifact) is True
+
+
+def test_verify_settlement_accepts_permit2_when_settlement_tx_targets_proxy() -> None:
+    """Real `settle` txs set `to` to x402ExactPermit2Proxy, not the ERC-20."""
+    transfer_topic = keccak(b"Transfer(address,address,uint256)")
+    permit2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+    asset = "0x" + "01" * 20
+    payer = "0x" + "02" * 20
+    pay_to = "0x" + "03" * 20
+    amount = 1000
+    txh = "0x" + "aa" * 32
+
+    topics = [transfer_topic, _addr_topic(permit2), _addr_topic(pay_to)]
+    log = {"address": asset, "topics": topics, "data": amount.to_bytes(32, "big")}
+    receipt = {"status": 1, "logs": [log]}
+    tx = {"to": X402_EXACT_PERMIT2_PROXY_ADDRESS}
 
     w3 = MagicMock()
     w3.eth.chain_id = 8453

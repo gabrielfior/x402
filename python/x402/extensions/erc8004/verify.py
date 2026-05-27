@@ -12,6 +12,8 @@ from typing import Any
 
 from eth_utils import keccak, to_checksum_address
 
+from x402.mechanisms.evm.constants import X402_EXACT_PERMIT2_PROXY_ADDRESS
+
 from .artifact import (
     compute_feedback_hash,
     compute_interaction_hash,
@@ -94,10 +96,14 @@ def verify_settlement(w3: Any, artifact: dict[str, Any]) -> bool:
             return False
 
         tx = w3.eth.get_transaction(s["txHash"])
-        if _canon_addr(tx["to"]) != asset:
-            return False
-
+        tx_to = _canon_addr(tx["to"])
         pm = str(s.get("paymentMethod", "")).lower()
+        if tx_to != asset:
+            # Exact Permit2 settlements call `x402ExactPermit2Proxy.settle`; the
+            # ERC-20 `Transfer` still appears on the asset contract in receipt logs.
+            if not (pm == "permit2" and tx_to == _canon_addr(X402_EXACT_PERMIT2_PROXY_ADDRESS)):
+                return False
+
         reqs = s.get("paymentRequirements") or {}
         extra = reqs.get("extra") if isinstance(reqs, dict) else None
         if not isinstance(extra, dict):
