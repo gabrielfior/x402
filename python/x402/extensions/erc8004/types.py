@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,9 +14,9 @@ ARTIFACT_VERSION = "x402-erc8004/1"
 class ERC8004ExtensionInfo(BaseModel):
     """Info portion of the erc8004 extension declaration."""
 
-    agent_id: int
+    agent_id: int = Field(alias="agentId")
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "allow", "populate_by_name": True}
 
 
 class ERC8004ExtensionDeclaration(BaseModel):
@@ -100,7 +101,7 @@ class FeedbackArtifact(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
-            "settlement": self.settlement,
-            "interaction": self.interaction,
-            "feedback": self.feedback,
+            "settlement": copy.deepcopy(self.settlement),
+            "interaction": copy.deepcopy(self.interaction),
+            "feedback": copy.deepcopy(self.feedback),
         }

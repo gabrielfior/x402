@@ -45,12 +45,14 @@ def test_build_artifact_shape() -> None:
         tx_hash="0x" + "ab" * 32,
         payer="0x" + "02" * 20,
         payment_method="eip3009",
+        agent_id=42,
         request={"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
         response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
         feedback={"agentId": 42, "value": 90, "valueDecimals": 0, "tag1": "", "tag2": "", "endpoint": "", "comment": ""},
     )
     d = art.to_dict()
     assert d["settlement"]["payer"] == "0x" + "02" * 20
+    assert d["settlement"]["agentId"] == 42
     assert d["settlement"]["payTo"] == "0x" + "03" * 20
     assert d["settlement"]["amount"] == "1000000"
     assert d["interaction"]["response"]["agentSignature"] is None
@@ -64,6 +66,7 @@ def test_interaction_hash_excludes_feedback_and_agentsig() -> None:
         tx_hash="0x" + "ab" * 32,
         payer="0x" + "02" * 20,
         payment_method="eip3009",
+        agent_id=42,
         request={"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
         response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
     )
@@ -83,6 +86,7 @@ def test_interaction_hash_covers_request_and_response() -> None:
         tx_hash="0x" + "ab" * 32,
         payer="0x" + "02" * 20,
         payment_method="eip3009",
+        agent_id=42,
         feedback={"agentId": 42, "value": 90, "valueDecimals": 0, "tag1": "", "tag2": "", "endpoint": "", "comment": ""},
     )
     req = {"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32}
@@ -100,6 +104,7 @@ def test_interaction_hash_ignores_embedded_agent_signature() -> None:
         tx_hash="0x" + "ab" * 32,
         payer="0x" + "02" * 20,
         payment_method="eip3009",
+        agent_id=42,
         request={"method": "GET", "url": "https://x/y", "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "00" * 32},
         response={"status": 200, "headerDigest": "0x" + "00" * 32, "bodyDigest": "0x" + "0a" * 32},
         feedback={"agentId": 42, "value": 90},

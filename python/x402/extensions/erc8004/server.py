@@ -54,6 +54,7 @@ def create_erc8004_resource_server_extension(
 def create_interaction_receipt(
     signer: Any,
     *,
+    agent_id: int,
     requirements: PaymentRequirements,
     payment_payload: PaymentPayload,
     tx_hash: str,
@@ -78,6 +79,7 @@ def create_interaction_receipt(
         tx_hash=tx_hash,
         payer=payer,
         payment_method=pm,
+        agent_id=agent_id,
         request=request,
         response=response,
         feedback={},
@@ -91,4 +93,5 @@ def create_interaction_receipt(
 def _payment_method(requirements: Any) -> str:
     """Best-effort scheme tag for the artifact (informational only)."""
     extra = getattr(requirements, "extra", {}) or {}
-    return extra.get("paymentMethod", requirements.scheme)
+    # x402 EVM mechanisms use `assetTransferMethod` ("eip3009", "permit2", ...).
+    return extra.get("assetTransferMethod") or extra.get("paymentMethod") or requirements.scheme

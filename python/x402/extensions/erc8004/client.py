@@ -47,7 +47,7 @@ def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | 
     if not ext:
         return None
     info = ext.get("info") if isinstance(ext, dict) else getattr(ext, "info", None)
-    return info or None
+    return info if info is not None else None
 
 
 def echo_erc8004_in_payment_payload(
@@ -179,6 +179,7 @@ class ERCFeedbackClient:
             tx_hash=tx_hash,
             payer=payer,
             payment_method=payment_method,
+            agent_id=params.agent_id,
             request=request,
             response=response,
             feedback=feedback,
@@ -193,7 +194,7 @@ class ERCFeedbackClient:
         return uri, feedback_hash, updated
 
     def submit_feedback_to_registry(
-        self, params: FeedbackParams, gas_limit: int = 250000
+        self, params: FeedbackParams, gas_limit: int | None = None
     ) -> str:
         """Submit feedback directly to ReputationRegistry.giveFeedback (type-2 tx)."""
         registry = self._w3.eth.contract(
@@ -214,6 +215,10 @@ class ERCFeedbackClient:
         if sender is None:
             raise TypeError("signer must expose an address attribute")
 
+        if gas_limit is None:
+            estimate = func.estimate_gas({"from": sender})
+            gas_limit = int(estimate * 1.2)
+
         nonce = self._w3.eth.get_transaction_count(sender)
         base_fee = self._w3.eth.get_block("latest")["baseFeePerGas"]
         tx = {
@@ -229,5 +234,4 @@ class ERCFeedbackClient:
         }
         signed = self._signer.sign_transaction(tx)
         raw = self._w3.eth.send_raw_transaction(signed.raw_transaction)
-        h = bytes(raw).hex()
-        return h if h.startswith("0x") else "0x" + h
+        return Web3.to_hex(raw)

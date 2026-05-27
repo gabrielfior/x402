@@ -28,6 +28,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from eth_account import Account
 from web3 import Web3
@@ -304,6 +305,7 @@ def main() -> int:
     # --- agent signs the receipt over {settlement, request, response} ---
     receipt = create_interaction_receipt(
         agent,
+        agent_id=agent_id,
         requirements=requirements,
         payment_payload=payload,
         tx_hash=settlement_tx,
@@ -365,11 +367,11 @@ def main() -> int:
     # --- off-chain verification against the fork state ---
     artifact = json.loads(uploader.content)
     print(f"\nverify_settlement -> {verify_settlement(w3, artifact)}")
-    tier = verify_feedback(w3, identity_registry, uploader.content, feedback_hash, artifact)
+    tier = verify_feedback(w3, identity_registry, uploader.content, feedback_hash, artifact, submitter=tx["from"])
     print(f"verify_feedback   -> {tier.name}")
 
     print(f"\nDONE — feedback posted on-chain, artifact at ipfs://{uploader.last_cid}")
-    return 0 if tier != TrustTier.REJECTED else 0
+    return 0 if tier == TrustTier.FULL else 1
 
 
 if __name__ == "__main__":

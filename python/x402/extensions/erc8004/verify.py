@@ -48,36 +48,98 @@ def _topic_addr(topic: bytes) -> str:
     return to_checksum_address("0x" + topic.hex()[-40:])
 
 
+def _parse_eip155_chain_id(chain_id: str) -> int:
+    # settlement.chainId is stored as requirements.network, e.g. "eip155:8453"
+    prefix, value = chain_id.split(":", 1)
+    if prefix != "eip155":
+        raise ValueError(f"unsupported chain id format: {chain_id}")
+    return int(value)
+
+
+def _canon_tx_hash(tx_hash: Any) -> str:
+    if isinstance(tx_hash, (bytes, bytearray)):
+        return "0x" + bytes(tx_hash).hex()
+    s = str(tx_hash)
+    if not s.startswith("0x"):
+        s = "0x" + s
+    return "0x" + s[2:].lower()
+
+
+def _canon_addr(addr: Any) -> str:
+    return to_checksum_address(str(addr))
+
+
+def _agent_owner(w3: Any, identity_registry: str, agent_id: int) -> str:
+    contract = w3.eth.contract(address=_canon_addr(identity_registry), abi=IDENTITY_ABI)
+    owner = contract.functions.ownerOf(agent_id).call()
+    return _canon_addr(owner)
+
+
 def verify_settlement(w3: Any, artifact: dict[str, Any]) -> bool:
     """Confirm the settlement tx emitted a matching ERC-20 Transfer."""
-    s = artifact["settlement"]
-    receipt = w3.eth.get_transaction_receipt(s["txHash"])
-    asset = to_checksum_address(s["asset"])
-    payer = to_checksum_address(s["payer"])
-    pay_to = to_checksum_address(s["payTo"])
-    amount = int(s["amount"])
+    try:
+        s = artifact["settlement"]
+        expected_chain_id = _parse_eip155_chain_id(s["chainId"])
+        if int(w3.eth.chain_id) != expected_chain_id:
+            return False
+        receipt = w3.eth.get_transaction_receipt(s["txHash"])
+        if receipt.get("status") != 1:
+            return False
+
+        asset = _canon_addr(s["asset"])
+        payer = _canon_addr(s["payer"])
+        pay_to = _canon_addr(s["payTo"])
+        amount = int(s["amount"])
+        if amount <= 0:
+            return False
+
+        tx = w3.eth.get_transaction(s["txHash"])
+        if _canon_addr(tx["to"]) != asset:
+            return False
+
+        pm = str(s.get("paymentMethod", "")).lower()
+        reqs = s.get("paymentRequirements") or {}
+        extra = reqs.get("extra") if isinstance(reqs, dict) else None
+        if not isinstance(extra, dict):
+            extra = {}
+        allowed_from = {payer}
+        if pm == "permit2":
+            # Permit2 singleton; many Permit2 settlement paths emit `Transfer` with
+            # `from` equal to the Permit2 contract rather than the payer EOA.
+            allowed_from.add(_canon_addr("0x000000000022D473030F116dDEE9F6B43aC78BA3"))
+        spender = extra.get("facilitatorAddress") or extra.get("spender")
+        if spender:
+            allowed_from.add(_canon_addr(str(spender)))
+    except Exception:
+        return False
+
     for log in receipt["logs"]:
-        if to_checksum_address(log["address"]) != asset:
+        if _canon_addr(log["address"]) != asset:
             continue
         topics = log["topics"]
         if len(topics) != 3 or ("0x" + bytes(topics[0]).hex()) != TRANSFER_TOPIC:
             continue
-        if _topic_addr(bytes(topics[1])) != payer or _topic_addr(bytes(topics[2])) != pay_to:
+        topic_from = _topic_addr(bytes(topics[1]))
+        topic_to = _topic_addr(bytes(topics[2]))
+        if topic_from not in allowed_from or topic_to != pay_to:
             continue
-        if int(bytes(log["data"]).hex() or "0", 16) == amount:
+        data = bytes(log["data"])
+        if len(data) != 32:
+            continue
+        if int(data.hex(), 16) == amount:
             return True
     return False
 
 
 def verify_agent_binding(w3: Any, identity_registry: str, artifact: dict[str, Any]) -> bool:
     """ownerOf(agentId) must equal the settlement payTo."""
-    agent_id = int(artifact["feedback"]["agentId"])
-    pay_to = to_checksum_address(artifact["settlement"]["payTo"])
-    contract = w3.eth.contract(
-        address=to_checksum_address(identity_registry), abi=IDENTITY_ABI
-    )
-    owner = contract.functions.ownerOf(agent_id).call()
-    return to_checksum_address(owner) == pay_to
+    try:
+        agent_id = int(artifact["feedback"]["agentId"])
+        pay_to = _canon_addr(artifact["settlement"]["payTo"])
+        owner = _agent_owner(w3, identity_registry, agent_id)
+        return owner == pay_to
+    except Exception:
+        return False
 
 
 def verify_feedback(
@@ -86,41 +148,72 @@ def verify_feedback(
     content: bytes,
     feedback_hash: bytes,
     artifact: dict[str, Any],
+    *,
+    submitter: str | None = None,
 ) -> TrustTier:
     """Full verification pipeline returning a trust tier."""
-    if not verify_integrity(content, feedback_hash):
-        return TrustTier.REJECTED
-    if compute_feedback_hash(artifact) != feedback_hash:
-        return TrustTier.REJECTED
-    if not verify_settlement(w3, artifact):
-        return TrustTier.REJECTED
-    if not verify_agent_binding(w3, identity_registry, artifact):
+    try:
+        if not verify_integrity(content, feedback_hash):
+            return TrustTier.REJECTED
+        if compute_feedback_hash(artifact) != feedback_hash:
+            return TrustTier.REJECTED
+        if not verify_settlement(w3, artifact):
+            return TrustTier.REJECTED
+
+        if submitter is not None and _canon_addr(submitter) != _canon_addr(artifact["settlement"]["payer"]):
+            return TrustTier.REJECTED
+
+        expected_chain_id = _parse_eip155_chain_id(artifact["settlement"]["chainId"])
+        if int(w3.eth.chain_id) != expected_chain_id:
+            return TrustTier.REJECTED
+
+        agent_id = int(artifact["feedback"]["agentId"])
+        owner = _agent_owner(w3, identity_registry, agent_id)
+        if owner != _canon_addr(artifact["settlement"]["payTo"]):
+            return TrustTier.REJECTED
+
+        # If settlement.agentId is present, require it matches the rated agentId.
+        if artifact["settlement"].get("agentId") is not None and int(artifact["settlement"]["agentId"]) != agent_id:
+            return TrustTier.REJECTED
+    except Exception:
         return TrustTier.REJECTED
 
     agent_sig = artifact["interaction"]["response"].get("agentSignature")
     if not agent_sig:
         return TrustTier.CLIENT_ONLY
 
-    receipt = InteractionReceipt.from_dict(agent_sig)
-    owner = w3.eth.contract(
-        address=to_checksum_address(identity_registry), abi=IDENTITY_ABI
-    ).functions.ownerOf(int(artifact["feedback"]["agentId"])).call()
-    if receipt.interaction_hash != compute_interaction_hash(artifact):
-        return TrustTier.DISPUTED
-    if not verify_interaction_receipt(receipt, owner):
-        return TrustTier.DISPUTED
-    return TrustTier.FULL
+    try:
+        receipt = InteractionReceipt.from_dict(agent_sig)
+    except Exception:
+        return TrustTier.REJECTED
+
+    try:
+        if receipt.chain_id != expected_chain_id:
+            return TrustTier.REJECTED
+        if _canon_tx_hash(receipt.tx_hash) != _canon_tx_hash(artifact["settlement"]["txHash"]):
+            return TrustTier.REJECTED
+        if not verify_interaction_receipt(receipt, owner):
+            return TrustTier.REJECTED
+        if receipt.interaction_hash != compute_interaction_hash(artifact):
+            return TrustTier.DISPUTED
+        return TrustTier.FULL
+    except Exception:
+        return TrustTier.REJECTED
 
 
 def dedup_feedback(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep the latest (by block) record per (payer, agentId, txHash)."""
     best: dict[tuple, dict[str, Any]] = {}
     for r in records:
-        payer = r["payer"]
+        payer = r.get("payer")
+        agent_id = r.get("agentId")
+        tx_hash = r.get("txHash")
+        if payer is None or agent_id is None or tx_hash is None:
+            continue
         key = (
-            to_checksum_address(payer) if str(payer).startswith("0x") and len(payer) == 42 else payer,
-            r["agentId"],
-            r["txHash"],
+            _canon_addr(payer),
+            int(agent_id),
+            _canon_tx_hash(tx_hash),
         )
         if key not in best or r["block"] > best[key]["block"]:
             best[key] = r

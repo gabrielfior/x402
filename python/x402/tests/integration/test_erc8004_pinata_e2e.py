@@ -195,6 +195,7 @@ def test_real_settlement_signature_upload_and_feedback(anvil) -> None:
     #     {version, settlement, request, response} once the response is known ---
     receipt = create_interaction_receipt(
         agent,
+        agent_id=42,
         requirements=requirements,
         payment_payload=payload,
         tx_hash=settlement_tx,
@@ -267,7 +268,14 @@ def test_real_settlement_signature_upload_and_feedback(anvil) -> None:
 
     # --- full off-chain verification against the real chain state ---
     assert verify_settlement(w3, artifact) is True
-    tier = verify_feedback(w3, identity_registry, uploader.content, feedback_hash, artifact)
+    tier = verify_feedback(
+        w3,
+        identity_registry,
+        uploader.content,
+        feedback_hash,
+        artifact,
+        submitter=tx["from"],
+    )
     print(f"[e2e] verify_feedback -> {tier.name}")
     assert tier == TrustTier.FULL
 

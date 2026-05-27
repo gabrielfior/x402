@@ -5,6 +5,7 @@ from x402.extensions.erc8004.types import (
     FeedbackParams,
     InteractionReceipt,
     FeedbackArtifact,
+    ERC8004ExtensionInfo,
 )
 
 
@@ -25,6 +26,11 @@ def test_feedback_params_defaults() -> None:
     assert p.value_decimals == 0
     assert p.feedback_uri == ""
     assert p.feedback_hash == b"\x00" * 32
+
+
+def test_extension_info_accepts_wire_agent_id_alias() -> None:
+    info = ERC8004ExtensionInfo.model_validate({"agentId": 7})
+    assert info.agent_id == 7
 
 
 def test_interaction_receipt_roundtrip() -> None:

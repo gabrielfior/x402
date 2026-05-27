@@ -33,6 +33,7 @@ def build_artifact(
     tx_hash: str,
     payer: str,
     payment_method: str,
+    agent_id: int | None,
     request: dict[str, Any],
     response: dict[str, Any],
     feedback: dict[str, Any],
@@ -47,6 +48,9 @@ def build_artifact(
             "chainId": requirements.network,
             "scheme": requirements.scheme,
             "paymentMethod": payment_method,
+            # Critical: bind agentId into what the agent signs (via settlement in the
+            # interaction core), since one owner EOA may control multiple agentIds.
+            "agentId": agent_id,
             "asset": to_checksum_address(requirements.asset),
             "payer": to_checksum_address(payer),
             "payTo": to_checksum_address(requirements.pay_to),

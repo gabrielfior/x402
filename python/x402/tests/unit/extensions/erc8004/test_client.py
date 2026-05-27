@@ -39,6 +39,11 @@ def test_extract_erc8004_info() -> None:
     assert extract_erc8004_info(pr)["agentId"] == 42
 
 
+def test_extract_erc8004_info_preserves_empty_info() -> None:
+    pr = PaymentRequired(accepts=[], extensions={"erc8004": {"info": {}, "schema": {}}})
+    assert extract_erc8004_info(pr) == {}
+
+
 def test_echo_erc8004_in_payment_payload() -> None:
     pr = PaymentRequired(accepts=[], extensions={"erc8004": {"info": {"agentId": 42}, "schema": {}}})
     payload = PaymentPayload(payload={}, accepted=_requirements())
@@ -132,6 +137,7 @@ def test_submit_feedback_to_registry_builds_tx() -> None:
     w3.eth.max_priority_fee = 1
     w3.eth.get_block.return_value = {"baseFeePerGas": 2}
     w3.eth.contract.return_value.functions.giveFeedback.return_value.build_transaction.return_value = {"data": "0xabcd"}
+    w3.eth.contract.return_value.functions.giveFeedback.return_value.estimate_gas = MagicMock(return_value=200000)
     signer.sign_transaction.return_value = MagicMock(raw_transaction=b"\x01")
     w3.eth.send_raw_transaction.return_value = bytes.fromhex("ab" * 32)
     client._w3 = w3

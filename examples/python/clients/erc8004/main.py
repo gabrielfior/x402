@@ -185,6 +185,7 @@ def main() -> int:
         # Agent signs the receipt over {settlement, request, response}.
         receipt = create_interaction_receipt(
             agent,
+            agent_id=42,
             requirements=requirements,
             payment_payload=payload,
             tx_hash=settlement_tx,
@@ -242,7 +243,14 @@ def main() -> int:
         assert args["feedbackURI"] == uri
         assert args["feedbackHash"] == feedback_hash
         assert verify_settlement(w3, json.loads(uploader.content)) is True
-        tier = verify_feedback(w3, identity_registry, uploader.content, feedback_hash, json.loads(uploader.content))
+        tier = verify_feedback(
+            w3,
+            identity_registry,
+            uploader.content,
+            feedback_hash,
+            json.loads(uploader.content),
+            submitter=tx["from"],
+        )
         print(f"verify_feedback -> {tier.name}")
         assert tier == TrustTier.FULL
 

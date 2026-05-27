@@ -76,6 +76,7 @@ def test_create_interaction_receipt_covers_request_response() -> None:
 
     receipt = create_interaction_receipt(
         agent,
+        agent_id=42,
         requirements=_requirements(),
         payment_payload=payload,
         tx_hash="0x" + "ab" * 32,
@@ -96,6 +97,7 @@ def test_create_interaction_receipt_covers_request_response() -> None:
         tx_hash="0x" + "ab" * 32,
         payer="0x" + "02" * 20,
         payment_method="eip3009",
+        agent_id=42,
         request=_REQUEST,
         response=_RESPONSE,
         feedback={"agentId": 42, "value": 95},
@@ -103,10 +105,41 @@ def test_create_interaction_receipt_covers_request_response() -> None:
     assert receipt.interaction_hash == compute_interaction_hash(artifact.to_dict())
 
 
+def test_create_interaction_receipt_uses_asset_transfer_method_extra() -> None:
+    agent = Account.create()
+    reqs = _requirements().model_copy(update={"extra": {"assetTransferMethod": "permit2"}})
+    payload = PaymentPayload(payload={"sig": "0xdead"}, accepted=reqs)
+    receipt = create_interaction_receipt(
+        agent,
+        agent_id=42,
+        requirements=reqs,
+        payment_payload=payload,
+        tx_hash="0x" + "ab" * 32,
+        payer="0x" + "02" * 20,
+        request=_REQUEST,
+        response=_RESPONSE,
+        payment_method=None,
+    )
+
+    ref = build_artifact(
+        requirements=reqs,
+        payment_payload=payload,
+        tx_hash="0x" + "ab" * 32,
+        payer="0x" + "02" * 20,
+        payment_method="permit2",
+        agent_id=42,
+        request=_REQUEST,
+        response=_RESPONSE,
+        feedback={"agentId": 42, "value": 95},
+    )
+    assert receipt.interaction_hash == compute_interaction_hash(ref.to_dict())
+
+
 def test_receipt_changes_when_response_changes() -> None:
     agent = Account.create()
     payload = PaymentPayload(payload={"sig": "0xdead"}, accepted=_requirements())
     common = dict(
+        agent_id=42,
         requirements=_requirements(),
         payment_payload=payload,
         tx_hash="0x" + "ab" * 32,
