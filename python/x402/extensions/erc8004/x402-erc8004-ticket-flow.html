@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>x402 × ERC-8004 — Ticket flow (1-step)</title>
+    <style>
+        :root {
+            --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --bg: #f9fafb;
+            --x402: #6b7280; --new: #7c3aed; --chain: #0891b2;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; font-size: 0.9rem; line-height: 1.45; color: var(--text); max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+        h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
+        .sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 1.25rem; }
+        h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+        .parties { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; font-size: 0.75rem; }
+        .party { padding: 0.35rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+        .states { font-size: 0.8rem; background: #f5f3ff; border: 1px solid #c4b5fd; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-family: ui-monospace, monospace; }
+        .phase { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--border); background: var(--bg); }
+        .phase.chain { border-color: var(--chain); }
+        .phase.new { border-color: var(--new); background: #faf5ff; }
+        .phase h3 { font-size: 0.85rem; margin-bottom: 0.2rem; }
+        .phase p, .phase ul { font-size: 0.78rem; color: var(--muted); }
+        .phase ul { margin-left: 1rem; margin-top: 0.25rem; }
+        .phase code { font-size: 0.72rem; background: #fff; padding: 0 0.2rem; border: 1px solid var(--border); }
+        .badge { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 3px; margin-left: 0.25rem; }
+        .badge.x402 { background: #e5e7eb; color: #4b5563; }
+        .badge.new { background: #ede9fe; color: #5b21b6; }
+        .ascii { background: #1a1a2e; color: #e0e0e0; padding: 0.75rem; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.55rem; line-height: 1.2; overflow-x: auto; white-space: pre; }
+        .ascii .dim { color: #9ca3af; }
+        .ascii .hi { color: #c4b5fd; }
+        table { width: 100%; font-size: 0.75rem; border-collapse: collapse; margin-top: 0.5rem; }
+        th, td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
+        th { background: var(--bg); }
+        footer { margin-top: 1.5rem; font-size: 0.75rem; color: var(--muted); }
+    </style>
+</head>
+<body>
+    <h1>x402 × ERC-8004 — ticket flow</h1>
+    <p class="sub">1-step x402 (same URL). TicketMinter + ReputationRegistry v3. Facilitator sponsors settlement/finalize gas.</p>
+
+    <div class="parties">
+        <span class="party"><strong>Client</strong> — payer, request/response digests, feedback tx</span>
+        <span class="party"><strong>Agent server</strong> — 402, handler, optional receipt sig</span>
+        <span class="party"><strong>Facilitator</strong> — verify + on-chain settle/mint/finalize (gas)</span>
+        <span class="party"><strong>On-chain</strong> — TicketMinter, IdentityRegistry, ReputationRegistry</span>
+    </div>
+
+    <div class="states">Ticket: NONE → <strong>MINTED</strong> (paid + request) → <strong>FINALIZED</strong> (response) → <strong>CONSUMED</strong> (feedback)</div>
+
+    <h2>Phases (one paid HTTP request)</h2>
+
+    <div class="phase">
+        <h3>0 — Discover <span class="badge x402">x402</span></h3>
+        <p>Client <code>GET /resource</code> → 402 with <code>extensions.erc8004.agentId</code>, accepts (asset, amount, payTo). Client learns <strong>endpoint</strong> (this URL) only from the server.</p>
+    </div>
+
+    <div class="phase">
+        <h3>1 — Bind request (off-chain, before retry)</h3>
+        <p>Client computes <code>requestHash</code>, <code>interactionHash</code> (includes settlement + request digests). Signs payment auth (EIP-3009 / Permit2 / ERC-20).</p>
+    </div>
+
+    <div class="phase">
+        <h3>2 — Paid retry <span class="badge x402">x402</span></h3>
+        <p>Same <code>GET /resource</code> + <code>X-PAYMENT</code>. Server middleware: verify → settle (via facilitator).</p>
+    </div>
+
+    <div class="phase chain new">
+        <h3>3 — Settle + mint <span class="badge new">on-chain</span></h3>
+        <p>Facilitator calls <code>TicketMinter.settleAndMintTicket(...)</code> (one tx, facilitator gas). Atomic: ERC-20 transfer + ticket <strong>MINTED</strong> with <code>payer, agentId, requestHash, interactionHash, endpoint</code>. Revert ⇒ no ticket. Recover: <code>ticketIdByTxHash</code>.</p>
+    </div>
+
+    <div class="phase">
+        <h3>4 — Handler <span class="badge x402">x402</span></h3>
+        <p>Only after mint succeeds. Agent server runs route, returns body. Computes <code>responseHash</code>.</p>
+    </div>
+
+    <div class="phase chain new">
+        <h3>5 — Finalize <span class="badge new">on-chain</span></h3>
+        <p><code>finalizeTicket(ticketId, responseHash, agentReceiptSig?)</code> — facilitator or agent (gas sponsored). Status <strong>FINALIZED</strong>. Agent may omit sig (censorship); client/facilitator can finalize without sig.</p>
+    </div>
+
+    <div class="phase">
+        <h3>6 — Response <span class="badge x402">x402</span></h3>
+        <p><code>200</code> + resource + <code>PAYMENT-RESPONSE</code> (txHash, payer, ticketId). Optional <code>X-X402-Interaction-Receipt</code> header.</p>
+    </div>
+
+    <div class="phase chain new">
+        <h3>7 — Feedback <span class="badge new">on-chain</span></h3>
+        <p>Client <code>giveFeedbackWithTicket(...)</code> only (legacy <code>giveFeedback</code> reverts). Requires <strong>FINALIZED</strong> ticket, <code>msg.sender == payer</code>. Dedup per (payer, agent): <code>txHash</code> + <code>feedbackHash</code>. Consumes ticket. Agent may <code>disputeFeedback</code>.</p>
+    </div>
+
+    <h2>Composability (why on-chain ticket)</h2>
+    <table>
+        <tr><th>Question</th><th>Check on-chain</th></tr>
+        <tr><td>Payment happened?</td><td><code>ticket.status &gt;= MINTED</code> (mint only if settle succeeded in same tx)</td></tr>
+        <tr><td>Tied to this request?</td><td><code>requestHash</code> / <code>interactionHash</code> at mint</td></tr>
+        <tr><td>Service delivered?</td><td><code>status == FINALIZED</code> + <code>responseHash</code></td></tr>
+        <tr><td>Feedback valid?</td><td>Registry requires finalized ticket + consume; no IPFS/logs required</td></tr>
+    </table>
+
+    <h2>Sequence</h2>
+    <div class="ascii"><span class="dim">Client          AgentServer       Facilitator       TicketMinter       ReputationRegistry
+  |                 |                 |                 |                    |
+  | GET /resource ->|                 |                 |                    |
+  |<- 402 agentId --|                 |                 |                    |
+  | build requestHash, interactionHash; sign payment    |                    |
+  |                 |                 |                 |                    |
+  | GET + X-PAYMENT>| verify/settle ->| settleAndMint ->| MINTED             |
+  |                 | handler         |                 |                    |
+  |                 | finalize ------>| finalizeTicket->| FINALIZED          |
+  |<- 200 + body ---|                 |                 |                    |
+  |                 |                 |                 |                    |
+</span><span class="hi">  | giveFeedbackWithTicket ----------------------------------------------->| CONSUMED
+</span></div>
+
+    <footer>Proposed design — May 2026. Not implemented.</footer>
+</body>
+</html>
