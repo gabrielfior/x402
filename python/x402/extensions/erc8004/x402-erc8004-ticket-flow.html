@@ -8,112 +8,243 @@
         :root {
             --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --bg: #f9fafb;
             --x402: #6b7280; --new: #7c3aed; --chain: #0891b2;
+            --client: #2563eb; --server: #0891b2; --fac: #ca8a04;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: system-ui, sans-serif; font-size: 0.9rem; line-height: 1.45; color: var(--text); max-width: 900px; margin: 0 auto; padding: 1.5rem; }
         h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
-        .sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 1.25rem; }
+        .sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 1rem; }
         h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+        .summary { font-size: 0.8rem; background: #f0fdf4; border: 1px solid #86efac; padding: 0.6rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; }
+        .summary ul { margin: 0.35rem 0 0 1.1rem; color: var(--muted); }
+        .summary strong { color: var(--text); }
         .parties { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; font-size: 0.75rem; }
         .party { padding: 0.35rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
         .states { font-size: 0.8rem; background: #f5f3ff; border: 1px solid #c4b5fd; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-family: ui-monospace, monospace; }
         .phase { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--border); background: var(--bg); }
         .phase.chain { border-color: var(--chain); }
         .phase.new { border-color: var(--new); background: #faf5ff; }
-        .phase h3 { font-size: 0.85rem; margin-bottom: 0.2rem; }
+        .phase h3 { font-size: 0.85rem; margin-bottom: 0.2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; }
         .phase p, .phase ul { font-size: 0.78rem; color: var(--muted); }
         .phase ul { margin-left: 1rem; margin-top: 0.25rem; }
         .phase code { font-size: 0.72rem; background: #fff; padding: 0 0.2rem; border: 1px solid var(--border); }
-        .badge { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 3px; margin-left: 0.25rem; }
+        .badge { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 3px; }
         .badge.x402 { background: #e5e7eb; color: #4b5563; }
         .badge.new { background: #ede9fe; color: #5b21b6; }
-        .ascii { background: #1a1a2e; color: #e0e0e0; padding: 0.75rem; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.55rem; line-height: 1.2; overflow-x: auto; white-space: pre; }
+        .badge.actor { font-weight: 600; letter-spacing: 0.02em; }
+        .badge.client { background: #dbeafe; color: #1d4ed8; }
+        .badge.server { background: #cffafe; color: #0e7490; }
+        .badge.fac { background: #fef9c3; color: #a16207; }
+        .badge.chain { background: #e0f2fe; color: #0369a1; }
+        .consider { font-size: 0.78rem; color: var(--muted); }
+        .consider li { margin: 0.35rem 0 0 1.1rem; }
+        .consider strong { color: var(--text); }
+        .contracts { font-size: 0.78rem; }
+        .contracts dt { font-weight: 600; margin-top: 0.5rem; }
+        .contracts dd { color: var(--muted); margin: 0.15rem 0 0 0.75rem; }
+        .contracts code { font-size: 0.72rem; }
+        .ascii { background: #1a1a2e; color: #e0e0e0; padding: 0.75rem; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.52rem; line-height: 1.25; overflow-x: auto; white-space: pre; margin-bottom: 0.35rem; }
         .ascii .dim { color: #9ca3af; }
-        .ascii .hi { color: #c4b5fd; }
-        table { width: 100%; font-size: 0.75rem; border-collapse: collapse; margin-top: 0.5rem; }
-        th, td { border: 1px solid var(--border); padding: 0.35rem 0.5rem; text-align: left; }
-        th { background: var(--bg); }
+        .ascii .new { color: #c4b5fd; font-weight: 600; }
+        .ascii .sdk { color: #86efac; }
+        .ascii-legend { font-size: 0.72rem; color: var(--muted); margin-bottom: 0.5rem; }
+        .ascii-legend span { margin-right: 0.75rem; }
+        .ascii-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 0.2rem; }
         footer { margin-top: 1.5rem; font-size: 0.75rem; color: var(--muted); }
     </style>
 </head>
 <body>
     <h1>x402 × ERC-8004 — ticket flow</h1>
-    <p class="sub">1-step x402 (same URL). TicketMinter + ReputationRegistry v3. Facilitator sponsors settlement/finalize gas.</p>
+    <p class="sub">1-step x402 (same URL). Proposed — not implemented.</p>
+
+    <h2>Summary — what to build</h2>
+    <div class="summary">
+        <ul>
+            <li><strong>New:</strong> <code>TicketMinter</code> — settle + mint ticket; finalize response; recover by <code>txHash</code>.</li>
+            <li><strong>Upgrade:</strong> <code>ReputationRegistry</code> — ticket-gated <code>giveFeedbackWithTicket</code>, on-chain dedup, agent disputes; legacy <code>giveFeedback</code> disabled.</li>
+            <li><strong>SDK:</strong> facilitator routes settle → minter; agent-server runs handler then triggers finalize; client submits feedback.</li>
+        </ul>
+    </div>
 
     <div class="parties">
-        <span class="party"><strong>Client</strong> — payer, request/response digests, feedback tx</span>
-        <span class="party"><strong>Agent server</strong> — 402, handler, optional receipt sig</span>
-        <span class="party"><strong>Facilitator</strong> — verify + on-chain settle/mint/finalize (gas)</span>
-        <span class="party"><strong>On-chain</strong> — TicketMinter, IdentityRegistry, ReputationRegistry</span>
+        <span class="party"><strong>Client</strong> — payer, digests, feedback tx</span>
+        <span class="party"><strong>Agent server</strong> — 402, route handler, receipt sig</span>
+        <span class="party"><strong>Facilitator</strong> — verify, settle/mint/finalize gas</span>
+        <span class="party"><strong>Chain</strong> — TicketMinter, IdentityRegistry, ReputationRegistry</span>
     </div>
 
     <div class="states">Ticket: NONE → <strong>MINTED</strong> (paid + request) → <strong>FINALIZED</strong> (response) → <strong>CONSUMED</strong> (feedback)</div>
 
+    <h2>Smart contracts</h2>
+    <dl class="contracts">
+        <dt>TicketMinter <span class="badge new">new</span></dt>
+        <dd>
+            <code>settleAndMintTicket</code> — facilitator submits; runs scheme settlement (EIP-3009 / Permit2 / ERC-20); on success writes ticket (<code>MINTED</code>) with <code>payer, agentId, requestHash, interactionHash, endpoint, settlementTxHash</code>. Revert ⇒ no ticket.
+            <br><code>finalizeTicket</code> — sets <code>responseHash</code>, optional agent receipt sig; <code>FINALIZED</code>.
+            <br><code>ticketIdByTxHash</code> — recovery if client never got <code>ticketId</code> in HTTP response.
+        </dd>
+        <dt>ReputationRegistryUpgradeable <span class="badge new">upgrade</span></dt>
+        <dd>
+            <code>giveFeedbackWithTicket</code> only — requires finalized, unconsumed ticket; <code>msg.sender == payer</code>; dedup <code>(agentId, payer, txHash)</code> and <code>(agentId, payer, feedbackHash)</code>; consumes ticket.
+            <br><code>disputeFeedback</code> — agent owner/operator only.
+            <br><code>giveFeedback</code> — revert (no bypass).
+        </dd>
+        <dt>IdentityRegistry</dt>
+        <dd>Unchanged — <code>ownerOf(agentId)</code> for payTo binding and receipt/dispute auth.</dd>
+    </dl>
+
+    <h2>Key considerations</h2>
+    <ul class="consider">
+        <li><strong>No IPFS required.</strong> Payment and job binding live on-chain in the ticket (<code>requestHash</code> at mint, <code>responseHash</code> at finalize). <code>feedbackURI</code> is optional (rich text only).</li>
+        <li><strong>vs off-chain aggregator only.</strong> Aggregators can still verify, but anyone can spam <code>giveFeedback</code> today and composable contracts cannot trust entries without log/IPFS work. Tickets make “paid for this job” a cheap on-chain read; dedup is enforced in the registry, not filtered downstream.</li>
+        <li><strong>Feedback connected to jobs.</strong> A ticket is the job record: one successful settlement ⇒ one mint per <code>(payer, agentId, txHash)</code>. <code>TicketMinter</code> is the singleton choke point for “payment succeeded” (revert ⇒ no ticket). The buyer still calls <code>giveFeedbackWithTicket</code> as <code>msg.sender</code> (correct attribution); the registry gates on the ticket instead of a separate gateway submitting on the buyer’s behalf.</li>
+    </ul>
+
     <h2>Phases (one paid HTTP request)</h2>
 
     <div class="phase">
-        <h3>0 — Discover <span class="badge x402">x402</span></h3>
-        <p>Client <code>GET /resource</code> → 402 with <code>extensions.erc8004.agentId</code>, accepts (asset, amount, payTo). Client learns <strong>endpoint</strong> (this URL) only from the server.</p>
+        <h3>0 — Discover
+            <span class="badge actor client">client</span>
+            <span class="badge actor server">agent server</span>
+            <span class="badge x402">x402</span>
+        </h3>
+        <p>Client <code>GET /resource</code> → agent server returns 402 + <code>extensions.erc8004.agentId</code>, accepts. Client learns <strong>endpoint</strong> (this URL) from the server.</p>
     </div>
 
     <div class="phase">
-        <h3>1 — Bind request (off-chain, before retry)</h3>
-        <p>Client computes <code>requestHash</code>, <code>interactionHash</code> (includes settlement + request digests). Signs payment auth (EIP-3009 / Permit2 / ERC-20).</p>
+        <h3>1 — Bind request
+            <span class="badge actor client">client</span>
+        </h3>
+        <p>Client computes <code>requestHash</code>, <code>interactionHash</code> for the ticket (erc8004). Payment signing (EIP-3009 / Permit2 / ERC-20) is standard x402 — see phase 2.</p>
     </div>
 
     <div class="phase">
-        <h3>2 — Paid retry <span class="badge x402">x402</span></h3>
-        <p>Same <code>GET /resource</code> + <code>X-PAYMENT</code>. Server middleware: verify → settle (via facilitator).</p>
+        <h3>2 — Sign payment
+            <span class="badge actor client">client</span>
+            <span class="badge x402">x402</span>
+        </h3>
+        <p>Standard x402: client signs token authorization from <code>PaymentRequired</code> (EIP-3009 / Permit2 / ERC-20).</p>
+    </div>
+
+    <div class="phase">
+        <h3>3 — Paid retry
+            <span class="badge actor client">client</span>
+            <span class="badge actor server">agent server</span>
+            <span class="badge actor fac">facilitator</span>
+            <span class="badge x402">x402</span>
+        </h3>
+        <p>Client retries same URL with <code>X-PAYMENT</code>. Agent server middleware calls facilitator verify → settle.</p>
     </div>
 
     <div class="phase chain new">
-        <h3>3 — Settle + mint <span class="badge new">on-chain</span></h3>
-        <p>Facilitator calls <code>TicketMinter.settleAndMintTicket(...)</code> (one tx, facilitator gas). Atomic: ERC-20 transfer + ticket <strong>MINTED</strong> with <code>payer, agentId, requestHash, interactionHash, endpoint</code>. Revert ⇒ no ticket. Recover: <code>ticketIdByTxHash</code>.</p>
+        <h3>4 — Settle + mint
+            <span class="badge actor fac">facilitator</span>
+            <span class="badge actor chain">chain</span>
+            <span class="badge new">on-chain</span>
+        </h3>
+        <p>Facilitator tx: <code>TicketMinter.settleAndMintTicket</code>. Atomic transfer + <strong>MINTED</strong> ticket. Facilitator pays gas.</p>
     </div>
 
     <div class="phase">
-        <h3>4 — Handler <span class="badge x402">x402</span></h3>
-        <p>Only after mint succeeds. Agent server runs route, returns body. Computes <code>responseHash</code>.</p>
+        <h3>5 — Serve resource
+            <span class="badge actor server">agent server</span>
+            <span class="badge x402">x402</span>
+        </h3>
+        <p>Agent server route handler runs <em>only after</em> mint succeeds (middleware gate). Executes business logic, builds HTTP response, computes <code>responseHash</code> from response digests. No chain tx in this step.</p>
     </div>
 
     <div class="phase chain new">
-        <h3>5 — Finalize <span class="badge new">on-chain</span></h3>
-        <p><code>finalizeTicket(ticketId, responseHash, agentReceiptSig?)</code> — facilitator or agent (gas sponsored). Status <strong>FINALIZED</strong>. Agent may omit sig (censorship); client/facilitator can finalize without sig.</p>
+        <h3>6 — Finalize
+            <span class="badge actor server">agent server</span>
+            <span class="badge actor fac">facilitator</span>
+            <span class="badge actor chain">chain</span>
+            <span class="badge new">on-chain</span>
+        </h3>
+        <p>Agent server (or client) supplies <code>responseHash</code> + optional receipt sig; facilitator submits <code>finalizeTicket</code> → <strong>FINALIZED</strong>. Agent may refuse to sign; finalize without sig still allowed.</p>
     </div>
 
     <div class="phase">
-        <h3>6 — Response <span class="badge x402">x402</span></h3>
-        <p><code>200</code> + resource + <code>PAYMENT-RESPONSE</code> (txHash, payer, ticketId). Optional <code>X-X402-Interaction-Receipt</code> header.</p>
+        <h3>7 — HTTP response
+            <span class="badge actor server">agent server</span>
+            <span class="badge actor client">client</span>
+            <span class="badge x402">x402</span>
+        </h3>
+        <p>Agent server → client: <code>200</code>, body, <code>PAYMENT-RESPONSE</code> (txHash, payer, ticketId). Optional <code>X-X402-Interaction-Receipt</code>.</p>
     </div>
 
     <div class="phase chain new">
-        <h3>7 — Feedback <span class="badge new">on-chain</span></h3>
-        <p>Client <code>giveFeedbackWithTicket(...)</code> only (legacy <code>giveFeedback</code> reverts). Requires <strong>FINALIZED</strong> ticket, <code>msg.sender == payer</code>. Dedup per (payer, agent): <code>txHash</code> + <code>feedbackHash</code>. Consumes ticket. Agent may <code>disputeFeedback</code>.</p>
+        <h3>8 — Feedback
+            <span class="badge actor client">client</span>
+            <span class="badge actor chain">chain</span>
+            <span class="badge new">on-chain</span>
+        </h3>
+        <p>Client tx: <code>ReputationRegistry.giveFeedbackWithTicket</code>. Requires <strong>FINALIZED</strong> ticket; dedup; consumes ticket. Client pays gas. Agent may <code>disputeFeedback</code> later.</p>
     </div>
-
-    <h2>Composability (why on-chain ticket)</h2>
-    <table>
-        <tr><th>Question</th><th>Check on-chain</th></tr>
-        <tr><td>Payment happened?</td><td><code>ticket.status &gt;= MINTED</code> (mint only if settle succeeded in same tx)</td></tr>
-        <tr><td>Tied to this request?</td><td><code>requestHash</code> / <code>interactionHash</code> at mint</td></tr>
-        <tr><td>Service delivered?</td><td><code>status == FINALIZED</code> + <code>responseHash</code></td></tr>
-        <tr><td>Feedback valid?</td><td>Registry requires finalized ticket + consume; no IPFS/logs required</td></tr>
-    </table>
 
     <h2>Sequence</h2>
-    <div class="ascii"><span class="dim">Client          AgentServer       Facilitator       TicketMinter       ReputationRegistry
-  |                 |                 |                 |                    |
-  | GET /resource ->|                 |                 |                    |
-  |<- 402 agentId --|                 |                 |                    |
-  | build requestHash, interactionHash; sign payment    |                    |
-  |                 |                 |                 |                    |
-  | GET + X-PAYMENT>| verify/settle ->| settleAndMint ->| MINTED             |
-  |                 | handler         |                 |                    |
-  |                 | finalize ------>| finalizeTicket->| FINALIZED          |
-  |<- 200 + body ---|                 |                 |                    |
-  |                 |                 |                 |                    |
-</span><span class="hi">  | giveFeedbackWithTicket ----------------------------------------------->| CONSUMED
-</span></div>
+    <p class="ascii-legend">
+        <span><span class="swatch" style="background:#9ca3af"></span> Standard x402</span>
+        <span><span class="swatch" style="background:#86efac"></span> SDK / off-chain (new wiring)</span>
+        <span><span class="swatch" style="background:#c4b5fd"></span> On-chain (new / upgraded contracts)</span>
+    </p>
+    <div class="ascii"><span class="dim">                         Client (payer)     Agent server        Facilitator         TicketMinter          ReputationRegistry
+                              |                  |                   |                    |                         |
+</span><span class="dim"> 1  DISCOVER                 |                  |                   |                    |                         |
+                              |-- GET /resource ->|                   |                    |                         |
+                              |<- 402 PaymentRequired + erc8004.agentId, accepts (endpoint URL)                  |
+                              |                  |                   |                    |                         |
+</span><span class="sdk"> 2  BIND TICKET (off-chain)  |                  |                   |                    |                         |
+                              | requestHash, interactionHash, endpoint (passed to minter)  |                         |
+                              |                  |                   |                    |                         |
+</span><span class="dim">    sign payment auth (EIP-3009 / Permit2 / ERC-20) — standard x402 client flow       |
+                              |                  |                   |                    |                         |
+ 3  PAID RETRY               |                  |                   |                    |                         |
+                              |-- GET + X-PAYMENT (same URL) ->|                   |                    |                         |
+                              |                  |-- POST /verify --->|                   |                    |                         |
+                              |                  |<- ok -------------|                   |                    |                         |
+                              |                  |                   |                    |                         |
+</span><span class="new"> 4  SETTLE + MINT (1 tx)     |                  |                   |                    |                         |
+                              |                  |-- POST /settle ---->|                   |                         |
+                              |                  |                   | settleAndMintTicket(payer, agentId,          |
+                              |                  |                   |   requestHash, interactionHash, endpoint,  |
+                              |                  |                   |   paymentAuth...) ------------------------>|
+                              |                  |                   |                    | ERC-20 Transfer      |
+                              |                  |                   |                    | ticket.status=MINTED |
+                              |                  |                   |                    | emit TicketMinted    |
+                              |                  |                   |<- txHash, ticketId-|                         |
+                              |                  |<- settle ok -------|                    |                         |
+                              |                  | (abort handler if mint failed)         |                         |
+                              |                  |                   |                    |                         |
+</span><span class="dim"> 5  SERVE (off-chain)        |                  |                   |                    |                         |
+                              |                  | route handler: business logic          |                         |
+                              |                  | build response digests -> responseHash |                         |
+</span><span class="sdk">                              |                  | optional: sign InteractionReceipt (erc8004 ext)          |
+                              |                  |                   |                    |                         |
+</span><span class="new"> 6  FINALIZE (1 tx)          |                  |                   |                    |                         |
+                              |                  |-- finalize req ---->| finalizeTicket(ticketId, responseHash,   |
+                              |                  |                   |   agentReceiptSig?) ---------------------->|
+                              |                  |                   |                    | ticket.status=FINALIZED
+                              |                  |                   | emit TicketFinalized                   |
+                              |                  |                   | (facilitator gas; agent sig optional)    |
+                              |                  |                   |                    |                         |
+</span><span class="dim"> 7  HTTP RESPONSE            |                  |                   |                    |                         |
+                              |<- 200 + body -----|                   |                    |                         |
+                              |    PAYMENT-RESPONSE: txHash, payer (standard x402)         |                         |
+</span><span class="sdk">                              |    + ticketId (erc8004 extension)                          |                         |
+                              |    optional X-X402-Interaction-Receipt                     |                         |
+                              |                  |                   |                    |                         |
+</span><span class="new"> 8  FEEDBACK (later)         |                  |                   |                    |                         |
+                              | giveFeedbackWithTicket(ticketId, feedbackHash, value,     |                         |
+                              |   endpoint, feedbackURI?, ...) -------------------------->| require FINALIZED ticket
+                              |                  |                   |                    | dedup txHash + feedbackHash
+                              |                  |                   |<- consume ticket --| ticket.status=CONSUMED
+                              |                  |                   |                    | emit NewFeedback       |
+                              |                  |                   |                    |                         |
+</span><span class="new"> 9  DISPUTE (optional)       |                  |                   |                    |                         |
+                              |                  | disputeFeedback(agentId, client, index) ->| agent owner/operator |
+                              |                  |                   |                    | emit FeedbackDisputed  |
+
+<span class="dim">  --- standard x402 path ends at step 7; steps 8–9 are post-request, on-chain reputation ---</span></div>
 
     <footer>Proposed design — May 2026. Not implemented.</footer>
 </body>
