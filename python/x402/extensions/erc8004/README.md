@@ -46,12 +46,8 @@ server.register_extension(create_erc8004_resource_server_extension(config))
 att = create_interaction_attestation(
     agent_owner,
     wrapper_address=config.wrapper_address,
-    agent_id=42,
     requirements=requirements,
-    payment_payload=payment_payload,
     ticket_id=int(settle_result.extensions["erc8004"]["ticketId"]),
-    tx_hash=settle_result.transaction,
-    payer=settle_result.payer,
     method="GET",
     url=url,
     request_body=request_body_bytes,
