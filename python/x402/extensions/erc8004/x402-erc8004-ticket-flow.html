@@ -285,6 +285,16 @@ LATER (optional)
         <strong>Payment-backed vs direct.</strong> The canonical registry is permissionless — a <code>NewFeedback</code> with <em>no</em> same-tx <code>TicketConsumed</code> is unverified direct feedback (anyone can call <code>giveFeedback</code>). <strong>Payment-backed feedback = a <code>NewFeedback</code> co-emitted with a <code>TicketConsumed</code> from <code>X402AgentReputation</code> in the same tx.</strong> That co-occurrence is the on-chain signal aggregators filter on; <code>verify_feedback</code> then checks the ticket + attestation off-chain.
     </div>
 
+    <h2>Why two contracts, not one (EIP-7702)</h2>
+    <p class="sub" style="margin-bottom:0.5rem">The ticket ledger (<code>X402AgentReputation</code>) and the feedback delegate (<code>FeedbackGateway</code>) can't be merged. An EIP-7702 delegate runs <em>as the client's EOA</em> — that breaks shared state and widens the blast radius, so the two roles need two contracts.</p>
+    <div class="feedback-paths">
+        <div class="path"><strong>1 · A delegate can't hold shared state.</strong> Under 7702 the delegate's code executes with <code>address(this)</code> = the EOA, so every <code>SLOAD</code>/<code>SSTORE</code> hits <em>that EOA's own</em> account storage. A <code>_tickets</code> mapping or <code>_nextTicketId</code> counter living in the delegate would be per-EOA and isolated: the facilitator mints into the shared contract, but a delegated <code>consumeTicket</code> would read the caller's empty storage and never find the ticket. The ticket ledger must be one standalone, stateful contract that every party calls; the delegate must be effectively stateless.</div>
+        <div class="path"><strong>2 · Delegation exposes the whole account — keep the surface tiny.</strong> A set-code authorization persists and lets the delegate's code act <em>as your EOA</em> (move your funds, etc.) until you reset it. Delegating to a contract that also transfers tokens, is <code>Ownable</code>, and holds settlement immutables would put all of that behind your account. <code>FeedbackGateway</code> is a fund-free, ownerless singleton holding only replay nonces, with guarded entrypoints (self-paid needs <code>msg.sender == address(this)</code>; sponsored needs a client-signed EIP-712 <code>FeedbackIntent</code>) — a minimal blast radius is what makes delegating to it acceptable.</div>
+    </div>
+    <div class="why">
+        <strong>Tell-tale:</strong> the gateway even needs a <em>fixed, immutable</em> EIP-712 domain separator (computed at deploy time, not from <code>address(this)</code>) precisely because at runtime <code>address(this)</code> is the EOA, not the gateway. A normal stateful settlement contract has no such constraint — different execution context, different contract.
+    </div>
+
     <footer>v2 — June 2026. See <a href="../../../../specs/extensions/erc8004_ticket_v2.md">erc8004_ticket_v2.md</a> · <a href="../../../../examples/python/clients/erc8004/README.md">demo README</a></footer>
 </body>
 </html>
