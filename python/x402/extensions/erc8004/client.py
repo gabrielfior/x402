@@ -13,19 +13,14 @@ from typing import Any
 from eth_utils import keccak, to_checksum_address
 from web3 import Web3
 
-from x402.schemas.extensions import ClientExtension
-from x402.schemas.payments import PaymentPayload, PaymentRequired
-
 from .constants import (
     FEEDBACK_GATEWAY_ABI,
     FEEDBACK_GATEWAY_DOMAIN_NAME,
     FEEDBACK_GATEWAY_DOMAIN_VERSION,
     REPUTATION_REGISTRY_ABI,
 )
-from .schema import erc8004_schema
 from .types import (
     ERC8004Config,
-    EXTENSION_KEY,
     FeedbackParams,
 )
 
@@ -60,40 +55,6 @@ FEEDBACK_INTENT_TYPES: dict[str, list[dict[str, str]]] = {
 }
 
 
-def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | None:
-    """Extract agentId from PaymentRequired.extensions."""
-    if not payment_required.extensions:
-        return None
-    ext = payment_required.extensions.get(EXTENSION_KEY)
-    if not ext:
-        return None
-    info = ext.get("info") if isinstance(ext, dict) else getattr(ext, "info", None)
-    return info if info is not None else None
-
-
-def echo_erc8004_in_payment_payload(
-    payment_payload: PaymentPayload, payment_required: PaymentRequired
-) -> PaymentPayload:
-    """Echo the erc8004 extension into PaymentPayload per x402 v2 spec."""
-    if not payment_required.extensions or EXTENSION_KEY not in payment_required.extensions:
-        return payment_payload
-    ext = payment_required.extensions[EXTENSION_KEY]
-    info = ext.get("info") if isinstance(ext, dict) else getattr(ext, "info", {})
-    extensions = dict(payment_payload.extensions or {})
-    extensions[EXTENSION_KEY] = {"info": dict(info), "schema": erc8004_schema}
-    payment_payload.extensions = extensions
-    return payment_payload
-
-
-class ERC8004ClientExtension(ClientExtension):
-    """Client extension that echoes erc8004 agentId into PaymentPayload."""
-
-    key = EXTENSION_KEY
-
-    def enrich_payment_payload(self, payment_payload: Any, payment_required: Any) -> Any:
-        return echo_erc8004_in_payment_payload(payment_payload, payment_required)
-
-
 class ERCFeedbackClient:
     """Client-side helper for ticket-gated feedback via the EIP-7702 FeedbackGateway.
 
@@ -106,10 +67,6 @@ class ERCFeedbackClient:
         self._config = config
         self._signer = signer
         self._w3 = Web3(Web3.HTTPProvider(config.rpc_url))
-
-    @staticmethod
-    def extract_erc8004_info(payment_required: PaymentRequired) -> dict[str, Any] | None:
-        return extract_erc8004_info(payment_required)
 
     def ticket_id_from_receipt(self, tx_hash: str) -> int | None:
         from .facilitator import ticket_id_from_receipt

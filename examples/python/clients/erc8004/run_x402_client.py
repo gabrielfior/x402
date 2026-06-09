@@ -32,7 +32,6 @@ from utils import ensure_dai_permit2_allowance
 from x402 import x402Client
 from x402.extensions.erc8004 import (
     ATTESTATION_HEADER,
-    ERC8004ClientExtension,
     ERC8004Config,
     ERCFeedbackClient,
     FeedbackParams,
@@ -267,7 +266,7 @@ async def main() -> int:
     print(f"Wrapper: {wrapper}")
 
     client = x402Client()
-    client.register_extension(ERC8004ClientExtension())
+    # No erc8004 client extension: agentId is server-sourced at settle, not echoed by the client.
     register_exact_evm_client(client, EthAccountSigner(payer), networks=NETWORK)
     http_helper = x402HTTPClient(client)
 

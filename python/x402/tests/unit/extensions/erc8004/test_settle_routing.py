@@ -15,32 +15,25 @@ from x402.schemas import VerifyResponse
 from x402.schemas.responses import SettleResponse
 
 
-def test_routes_through_wrapper_when_all_guards_hold(
-    make_requirements, make_payload_with_agent
-) -> None:
+def test_routes_through_wrapper_when_agent_id_in_requirements(make_requirements) -> None:
     wrapper_addr = "0x" + "aa" * 20
     ext = ERC8004TicketFacilitatorExtension(wrappers={"eip155:31337": wrapper_addr})
     context = FacilitatorContext({EXTENSION_KEY: ext})
 
-    route = _maybe_route_to_ticket_minter(
-        make_payload_with_agent(), make_requirements("eip155:31337"), context
-    )
+    requirements = make_requirements(network="eip155:31337", agent_id=42)
+    route = _maybe_route_to_ticket_minter(requirements, context)
 
     assert route == (wrapper_addr, 42)
 
 
-def test_falls_through_when_agent_id_missing(make_requirements, make_payload) -> None:
+def test_falls_through_when_agent_id_missing(make_requirements) -> None:
     ext = ERC8004TicketFacilitatorExtension(wrappers={"eip155:31337": "0x" + "aa" * 20})
     context = FacilitatorContext({EXTENSION_KEY: ext})
-    route = _maybe_route_to_ticket_minter(
-        make_payload(network="eip155:31337"), make_requirements("eip155:31337"), context
-    )
+    route = _maybe_route_to_ticket_minter(make_requirements(network="eip155:31337"), context)
     assert route is None
 
 
-def test_exact_evm_scheme_settle_reverifies_then_routes(
-    make_requirements, make_payload_with_agent
-) -> None:
+def test_exact_evm_scheme_settle_reverifies_then_routes(make_requirements, make_payload) -> None:
     wrapper_addr = "0x" + "aa" * 20
     ext = ERC8004TicketFacilitatorExtension(wrappers={"eip155:31337": wrapper_addr})
     context = FacilitatorContext({EXTENSION_KEY: ext})
@@ -53,6 +46,7 @@ def test_exact_evm_scheme_settle_reverifies_then_routes(
         extensions={EXTENSION_KEY: {"ticketId": "12"}},
     )
     scheme = ExactEvmScheme(signer)
+    requirements = make_requirements(network="eip155:31337", agent_id=42)
 
     with (
         patch("x402.extensions.erc8004.settle_via_wrapper", return_value=sentinel) as routed,
@@ -63,9 +57,7 @@ def test_exact_evm_scheme_settle_reverifies_then_routes(
             return_value=VerifyResponse(is_valid=True, payer="0x" + "02" * 20),
         ) as reverify,
     ):
-        result = scheme.settle(
-            make_payload_with_agent(), make_requirements("eip155:31337"), context
-        )
+        result = scheme.settle(make_payload(network="eip155:31337"), requirements, context)
 
     assert result is sentinel
     reverify.assert_called_once()
@@ -73,14 +65,13 @@ def test_exact_evm_scheme_settle_reverifies_then_routes(
     default_permit2.assert_not_called()
 
 
-def test_exact_evm_scheme_settle_rejects_invalid_ticket_payment(
-    make_requirements, make_payload_with_agent
-) -> None:
+def test_exact_evm_scheme_settle_rejects_invalid_ticket_payment(make_requirements, make_payload) -> None:
     """Re-verify failure short-circuits before the wrapper is touched."""
     wrapper_addr = "0x" + "aa" * 20
     ext = ERC8004TicketFacilitatorExtension(wrappers={"eip155:31337": wrapper_addr})
     context = FacilitatorContext({EXTENSION_KEY: ext})
     scheme = ExactEvmScheme(MagicMock())
+    requirements = make_requirements(network="eip155:31337", agent_id=42)
 
     with (
         patch("x402.extensions.erc8004.settle_via_wrapper") as routed,
@@ -92,9 +83,7 @@ def test_exact_evm_scheme_settle_rejects_invalid_ticket_payment(
             ),
         ),
     ):
-        result = scheme.settle(
-            make_payload_with_agent(), make_requirements("eip155:31337"), context
-        )
+        result = scheme.settle(make_payload(network="eip155:31337"), requirements, context)
 
     assert result.success is False
     assert result.error_reason == "bad_sig"

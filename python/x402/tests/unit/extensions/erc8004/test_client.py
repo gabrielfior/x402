@@ -1,36 +1,9 @@
-"""Tests for ERC-8004 client extension."""
+"""Tests for ERC-8004 client feedback helper."""
 
 from unittest.mock import MagicMock
 
-from x402.extensions.erc8004.client import (
-    ERC8004ClientExtension,
-    ERCFeedbackClient,
-    echo_erc8004_in_payment_payload,
-    extract_erc8004_info,
-)
+from x402.extensions.erc8004.client import ERCFeedbackClient
 from x402.extensions.erc8004.types import FeedbackParams
-from x402.schemas.payments import PaymentRequired
-
-
-def test_extract_erc8004_info() -> None:
-    pr = PaymentRequired(accepts=[], extensions={"erc8004": {"info": {"agentId": 42}, "schema": {}}})
-    assert extract_erc8004_info(pr)["agentId"] == 42
-
-
-def test_extract_erc8004_info_preserves_empty_info() -> None:
-    pr = PaymentRequired(accepts=[], extensions={"erc8004": {"info": {}, "schema": {}}})
-    assert extract_erc8004_info(pr) == {}
-
-
-def test_echo_erc8004_in_payment_payload(make_payload) -> None:
-    pr = PaymentRequired(accepts=[], extensions={"erc8004": {"info": {"agentId": 42}, "schema": {}}})
-    payload = make_payload()
-    result = echo_erc8004_in_payment_payload(payload, pr)
-    assert result.extensions["erc8004"]["info"]["agentId"] == 42
-
-
-def test_client_extension_key() -> None:
-    assert ERC8004ClientExtension().key == "erc8004"
 
 
 def test_submit_feedback_to_registry_builds_tx(make_config) -> None:

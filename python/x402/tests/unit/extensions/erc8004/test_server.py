@@ -30,7 +30,8 @@ def test_enrich_payment_required_response(make_config) -> None:
         requirements=[], resource_info=None, error=None, payment_required_response=MagicMock()
     )
     result = ext.enrich_payment_required_response({}, ctx)
-    assert result["info"]["agentId"] == 42
+    # Presence marker only — agentId is server-sourced at settle, not advertised in the 402.
+    assert result["info"] == {}
 
 
 def test_settlement_hook_surfaces_ticket_id(make_config, make_requirements, make_payload) -> None:

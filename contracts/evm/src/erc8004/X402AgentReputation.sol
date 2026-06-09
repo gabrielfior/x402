@@ -149,7 +149,7 @@ contract X402AgentReputation is IX402AgentReputation, Ownable {
         address token,
         uint256 amount
     ) internal returns (uint256 ticketId) {
-        _requireAgentExists(agentId);
+        _requireAgentBinding(agentId, agentAddress);
 
         ticketId = _nextTicketId++;
         _tickets[ticketId] = Ticket({
@@ -164,9 +164,15 @@ contract X402AgentReputation is IX402AgentReputation, Ownable {
         emit TicketMinted(ticketId, payer, agentId, agentAddress, token, amount);
     }
 
-    function _requireAgentExists(uint256 agentId) internal view {
+    /// @dev Bind the ticket's `agentId` to the address that received payment: the paid
+    ///      `agentAddress` must be the agent's registered owner. This makes "payment-backed
+    ///      feedback targets the paid agent" a chain-enforced invariant rather than a trust
+    ///      assumption on whoever supplied `agentId`. Subsumes the existence check — a
+    ///      non-zero owner equal to the already-validated `agentAddress` implies the agent
+    ///      exists. Matches the off-chain binding check (`ownerOf(agentId) == payTo`).
+    function _requireAgentBinding(uint256 agentId, address agentAddress) internal view {
         try identityRegistry.ownerOf(agentId) returns (address owner) {
-            if (owner == address(0)) revert InvalidAgent();
+            if (owner != agentAddress) revert InvalidAgent();
         } catch {
             revert InvalidAgent();
         }

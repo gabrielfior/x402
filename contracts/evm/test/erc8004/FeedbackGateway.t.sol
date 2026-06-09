@@ -20,7 +20,6 @@ contract FeedbackGatewayTest is Test {
     MockIdentityRegistry public identity;
     MockERC3009Token public t3009;
 
-    address public agentOwner = makeAddr("agentOwner");
     address public payTo = makeAddr("payTo");
     address public relayer = makeAddr("relayer");
 
@@ -37,7 +36,8 @@ contract FeedbackGatewayTest is Test {
         payer = vm.addr(payerPk);
 
         identity = new MockIdentityRegistry();
-        identity.setOwner(AGENT_ID, agentOwner);
+        // pay_to == the agent's registered owner, so the mint-time binding holds.
+        identity.setOwner(AGENT_ID, payTo);
 
         wrapper = new X402AgentReputation(address(this), address(0), address(identity));
         registry = new MockReputationRegistry();

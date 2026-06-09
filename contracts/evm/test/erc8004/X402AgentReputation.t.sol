@@ -19,7 +19,6 @@ contract X402AgentReputationTest is Test {
     MockIdentityRegistry public identity;
 
     address public owner = makeAddr("owner");
-    address public agentOwner = makeAddr("agentOwner");
     address public payer = makeAddr("payer");
     address public payTo = makeAddr("payTo");
 
@@ -28,7 +27,9 @@ contract X402AgentReputationTest is Test {
 
     function setUp() public {
         identity = new MockIdentityRegistry();
-        identity.setOwner(AGENT_ID, agentOwner);
+        // The paid address IS the agent's registered owner (pay_to == owner), so the
+        // mint-time agentId<->agentAddress binding holds.
+        identity.setOwner(AGENT_ID, payTo);
 
         wrapper = new X402AgentReputation(owner, address(0), address(identity));
         token = new MockERC20("USDC", "USDC", 6);
@@ -106,6 +107,23 @@ contract X402AgentReputationTest is Test {
         });
         vm.expectRevert(X402AgentReputation.InvalidAgent.selector);
         wrapper.settleAndMintTicketEIP3009(payer, 9999, payTo, settlement);
+    }
+
+    function test_revertWhen_agentAddressNotOwner() public {
+        // agentId 7 is owned by payTo; minting it against a different address must revert —
+        // a ticket cannot bind feedback to an agent that did not receive the payment.
+        address notOwner = makeAddr("notOwner");
+        IX402AgentReputation.EIP3009Settlement memory settlement = IX402AgentReputation.EIP3009Settlement({
+            token: address(t3009),
+            payTo: notOwner,
+            value: 1,
+            validAfter: 0,
+            validBefore: type(uint256).max,
+            nonce: keccak256("notowner"),
+            signature: ""
+        });
+        vm.expectRevert(X402AgentReputation.InvalidAgent.selector);
+        wrapper.settleAndMintTicketEIP3009(payer, AGENT_ID, notOwner, settlement);
     }
 
     function test_settleAndMintTicketEIP3009_callsTokenAndMints() public {
@@ -190,11 +208,11 @@ contract X402AgentReputationTest is Test {
     }
 
     function test_revertWhen_selfFeedback() public {
-        // Ticket whose payer is the agent owner: the agent cannot consume to review itself.
-        t3009.mint(agentOwner, 100e6);
-        uint256 ticketId = _mintTicketEIP3009(agentOwner, 10e6, keccak256("self"));
+        // Ticket whose payer is the agent owner (== payTo): the agent cannot review itself.
+        t3009.mint(payTo, 100e6);
+        uint256 ticketId = _mintTicketEIP3009(payTo, 10e6, keccak256("self"));
 
-        vm.prank(agentOwner);
+        vm.prank(payTo);
         vm.expectRevert(X402AgentReputation.SelfFeedbackNotAllowed.selector);
         wrapper.consumeTicket(ticketId);
     }

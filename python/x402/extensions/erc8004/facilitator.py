@@ -30,15 +30,18 @@ ERR_TICKET_MINT_FAILED = "erc8004_ticket_mint_failed"
 ERR_WRAPPER_NOT_CONFIGURED = "erc8004_wrapper_not_configured"
 
 
-def extract_agent_id(payload: PaymentPayload) -> int | None:
-    """Parse agentId from PaymentPayload.extensions.erc8004 (echoed from server 402)."""
-    extensions = payload.extensions or {}
-    ext = extensions.get(EXTENSION_KEY)
-    if not isinstance(ext, dict):
+def extract_agent_id(requirements: PaymentRequirements) -> int | None:
+    """Parse agentId from the server-set ``requirements.extra`` (never client-supplied).
+
+    The resource server stamps ``agentId`` into the settle-time requirements (see
+    ``set_requirements_agent_id``); the client never sends or echoes it. Returns None
+    when absent so non-erc8004 settlement falls through untouched.
+    """
+    extra = getattr(requirements, "extra", None)
+    if not isinstance(extra, dict):
         return None
-    info = ext.get("info") if isinstance(ext.get("info"), dict) else ext
     try:
-        return int(info["agentId"])
+        return int(extra["agentId"])
     except (KeyError, ValueError, TypeError):
         return None
 

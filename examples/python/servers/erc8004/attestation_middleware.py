@@ -13,6 +13,7 @@ from starlette.responses import Response
 from x402.extensions.erc8004 import (
     attach_interaction_attestation_header,
     create_interaction_attestation,
+    set_requirements_agent_id,
 )
 from x402.http.constants import SETTLEMENT_OVERRIDES_HEADER
 from x402.http.facilitator_client_base import FacilitatorResponseError
@@ -142,6 +143,10 @@ def erc8004_payment_middleware(
                         del response.headers[k]
 
             transport_context.response_headers = dict(response.headers)
+
+            # Source agentId from server config (authoritative), not the client. Stamped
+            # into the settle-time requirements only — never sent in the 402.
+            set_requirements_agent_id(result.payment_requirements, agent_id)
 
             try:
                 settle_result = await http_server.process_settlement(

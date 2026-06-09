@@ -2,25 +2,22 @@
 
 from typing import Any
 
+# Presence marker only. agentId is sourced server-side at settle (requirements.extra),
+# never sent to or echoed by the client, so the declaration carries no fields.
 erc8004_schema: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "properties": {
-        "agentId": {
-            "type": "integer",
-            "minimum": 0,
-        },
-    },
-    "required": ["agentId"],
+    "properties": {},
 }
 
 
-def declare_erc8004_extension(agent_id: int) -> dict[str, Any]:
+def declare_erc8004_extension() -> dict[str, Any]:
     """Declare the erc8004 extension for inclusion in PaymentRequired.extensions.
 
-    Returns a dict with {info: {agentId}, schema} structure per x402 v2 spec.
+    A presence marker so clients/aggregators can discover that the agent supports
+    ticket-gated feedback. Carries no ``agentId`` — that is server-sourced at settle.
     """
     return {
-        "info": {"agentId": agent_id},
+        "info": {},
         "schema": erc8004_schema,
     }

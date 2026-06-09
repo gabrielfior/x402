@@ -80,7 +80,7 @@ erc8004_config = ERC8004Config(
 )
 server.register_extension(create_erc8004_resource_server_extension(erc8004_config))
 
-erc8004_route_extensions = {"erc8004": declare_erc8004_extension(agent_id)}
+erc8004_route_extensions = {"erc8004": declare_erc8004_extension()}
 
 routes = {
     "GET /agent/usdc": RouteConfig(

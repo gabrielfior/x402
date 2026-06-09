@@ -49,7 +49,7 @@ This table is the **single source of truth** — later sections give mechanics a
 | Ticket storage (on-chain) | `payer`, `agentId`, `agentAddress`, `token`, `amount`, `consumed` — lifecycle indicator is a **`consumed` bool** (locked; no status enum) |
 | Not stored on ticket | `endpoint`, `requestHash`, `interactionHash`, `settlementTxHash`, body digests |
 | Mint inputs | **Payment fields only** — the facilitator already knows all of them from the verified settlement. **No request bind at mint**; job binding lives in the attestation. |
-| `agentAddress` | **`payTo` at mint time** — the address that received funds in the settle tx. **Server-declared**; no on-chain `ownerOf(agentId)` match — aggregators downgrade if it mismatches the registry. |
+| `agentAddress` | **`payTo` at mint time** — the address that received funds in the settle tx. **Server-sourced** (set in `requirements.extra` at settle; never client-echoed) and **bound on-chain**: mint requires `ownerOf(agentId) == agentAddress`, so a ticket cannot credit feedback to an agent that did not receive the payment. |
 | Direct feedback (no ticket) | **Open** on upstream `ReputationRegistry.giveFeedback` — wrapper does not disable or revert it |
 | Ticket-gated feedback | Wrapper `giveFeedbackWithTicket` only; wrapper has **no** legacy `giveFeedback` entrypoint |
 | Client at pay time | Signs x402 payment authorization **only** (no ticket bind in client payload) |
@@ -167,8 +167,7 @@ function settleAndMintTicket(
 
 - `payer != 0`, `agentAddress != 0`, `token != 0`, `amount > 0`
 - `payment.payTo == agentAddress`
-- `identityRegistry.ownerOf(agentId)` exists (registered agent)
-- No `payTo == ownerOf(agentId)` check — `agentAddress` is server-declared (see [Locked decisions](#locked-decisions)); registry mismatch is an aggregator downgrade, with event transparency
+- `ownerOf(agentId) == agentAddress` — binds the ticket's `agentId` to the paid address (subsumes the registered-agent existence check). `agentId` is server-sourced (`requirements.extra`), so this turns "payment-backed feedback targets the paid agent" into a chain-enforced invariant rather than a trust assumption.
 
 **Permit2 witness (v2)** binds plain payment + identity fields, **not** hashes:
 
@@ -612,7 +611,7 @@ Formerly open — resolved 2026-06-05:
 - [ ] Upstream `ReputationRegistry.giveFeedback` remains open (wrapper does not revert it)
 - [ ] Ticket storage fields sufficient (`payer`, `agentId`, `agentAddress`, `token`, `amount`, `consumed`)
 - [ ] No request bind at mint confirmed (ticket = payment proof; attestation = job binding)
-- [ ] `agentAddress` server-declared (no on-chain `ownerOf` match; aggregator downgrade) confirmed
+- [ ] `agentId` server-sourced (`requirements.extra`, not client-echoed) and bound on-chain at mint (`ownerOf(agentId) == agentAddress`) confirmed
 - [ ] Minimal on-chain feedback gate confirmed
 - [ ] **`InteractionAttestation`** scope (`ticketId` + `chainId` + HTTP fields + body digests, no payment fields) confirmed
 - [ ] No rollup `interactionHash` in v2 paths

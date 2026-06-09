@@ -100,7 +100,7 @@
     <div class="summary">
         <ul>
             <li><strong>Contracts:</strong> <code>X402AgentReputation</code> — x402 settle + consume-once ticket. <code>FeedbackGateway</code> (EIP-7702 delegate) consumes the ticket and forwards <code>giveFeedback</code> to the <strong>canonical</strong> <code>ReputationRegistry</code> — feedback is stored there, authored by the client.</li>
-            <li><strong>No bind at mint:</strong> client signs payment only; settlement is permissionless (gated by the signed authorization), so no facilitator allowlist.</li>
+            <li><strong>No bind at mint:</strong> client signs payment only; settlement is permissionless (gated by the signed authorization), so no facilitator allowlist. <code>agentId</code> is server-sourced at settle (never sent to or echoed by the client) and bound on-chain to the paid address.</li>
             <li><strong>Attestation:</strong> agent signs EIP-712 after handler → <code>X-X402-Interaction-Attestation</code> (best-effort; missing → <code>CLIENT_ONLY</code>).</li>
         </ul>
     </div>
@@ -150,7 +150,7 @@
 
     <div class="phase">
         <h3>0 — Discover</h3>
-        <p>GET → 402 with <code>extensions.erc8004.agentId</code>. Client echoes agentId into payment payload (no bind hashes).</p>
+        <p>GET → 402 advertises the <code>erc8004</code> extension as a presence marker — <strong>no <code>agentId</code> on the wire</strong>. The client signs payment only; nothing to echo or confirm.</p>
     </div>
     <div class="phase">
         <h3>1 — Sign payment</h3>
@@ -162,7 +162,7 @@
     </div>
     <div class="phase chain new">
         <h3>3 — Settle + mint (one tx)</h3>
-        <p>Facilitator re-verifies the payment (signature, amount, recipient, expiry — same checks as the standard x402 settle), then <code>settleAndMintTicket*(payer, agentId, agentAddress, payment)</code> settles and mints in one tx — plain ticket fields stored. <code>ticketId</code> on PAYMENT-RESPONSE.</p>
+        <p>The server stamps its <code>agentId</code> into the settle requirements (server-sourced, not client-supplied). Facilitator re-verifies the payment (signature, amount, recipient, expiry — same checks as the standard x402 settle), then <code>settleAndMintTicket*(payer, agentId, agentAddress, payment)</code> settles and mints in one tx; the wrapper binds the ticket on-chain (<code>ownerOf(agentId) == payTo</code>). Plain ticket fields stored. <code>ticketId</code> on PAYMENT-RESPONSE.</p>
     </div>
     <div class="phase">
         <h3>4 — Serve + attest (best-effort)</h3>
@@ -186,10 +186,10 @@
                               |                  |                   |                         |
 </span><span class="dim"> 0  DISCOVER                 |                  |                   |                         |
                               |-- GET /resource ->|                   |                         |
-                              |<- 402 + erc8004.agentId ----------------|                         |
+                              |<- 402 + erc8004 marker (no agentId) ----|                         |
                               |                  |                   |                         |
 </span><span class="dim"> 1  SIGN PAYMENT             | sign token auth (EIP-3009 / Permit2 / ERC-20)                 |
-                              | echo agentId in payload.extensions.erc8004 (no bind hashes)     |
+                              | (no agentId echo — server sources it at settle, requirements)   |
                               |                  |                   |                         |
  2  PAID RETRY               |-- GET + X-PAYMENT ->|                   |                         |
                               |                  |-- verify -------->|                         |

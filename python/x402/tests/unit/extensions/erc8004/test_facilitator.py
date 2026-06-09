@@ -22,14 +22,14 @@ def test_extension_resolves_wrapper_from_static_map() -> None:
     assert ext.resolve_wrapper("eip155:8453") is None
 
 
-def test_extract_agent_id_returns_int_when_present(make_payload_with_agent) -> None:
-    payload = make_payload_with_agent(info={"agentId": 99})
-    assert extract_agent_id(payload) == 99
+def test_extract_agent_id_returns_int_when_present(make_requirements) -> None:
+    requirements = make_requirements(network="eip155:31337", agent_id=99)
+    assert extract_agent_id(requirements) == 99
 
 
-def test_extract_agent_id_missing_returns_none(make_payload) -> None:
-    payload = make_payload(network="eip155:31337")
-    assert extract_agent_id(payload) is None
+def test_extract_agent_id_missing_returns_none(make_requirements) -> None:
+    requirements = make_requirements(network="eip155:31337")
+    assert extract_agent_id(requirements) is None
 
 
 def test_ticket_id_from_receipt_parses_topic() -> None:

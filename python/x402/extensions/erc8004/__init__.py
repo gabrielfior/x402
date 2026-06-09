@@ -16,10 +16,7 @@ from x402.extensions.erc8004.facilitator import (
     ticket_id_from_receipt,
 )
 from x402.extensions.erc8004.client import (
-    ERC8004ClientExtension,
     ERCFeedbackClient,
-    echo_erc8004_in_payment_payload,
-    extract_erc8004_info,
 )
 from x402.extensions.erc8004.schema import declare_erc8004_extension, erc8004_schema
 from x402.extensions.erc8004.server import (
@@ -27,6 +24,7 @@ from x402.extensions.erc8004.server import (
     attach_interaction_attestation_header,
     create_erc8004_resource_server_extension,
     create_interaction_attestation,
+    set_requirements_agent_id,
     try_create_interaction_attestation,
 )
 from x402.extensions.erc8004.types import (
@@ -54,15 +52,13 @@ __all__ = [
     "attach_interaction_attestation_header",
     "create_erc8004_resource_server_extension",
     "create_interaction_attestation",
+    "set_requirements_agent_id",
     "try_create_interaction_attestation",
     "ERC8004TicketFacilitatorExtension",
     "extract_agent_id",
     "settle_via_wrapper",
     "ticket_id_from_receipt",
     "ERCFeedbackClient",
-    "ERC8004ClientExtension",
-    "echo_erc8004_in_payment_payload",
-    "extract_erc8004_info",
     "declare_erc8004_extension",
     "erc8004_schema",
     "body_digest",

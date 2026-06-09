@@ -307,13 +307,13 @@ class ExactEvmScheme:
         Returns:
             SettleResponse with success, transaction, and payer.
         """
-        # ERC-8004 wrapper routing: if the facilitator has the extension
-        # registered AND the client echoed agentId, route settlement
+        # ERC-8004 wrapper routing: if the facilitator has the extension registered
+        # AND the server stamped agentId into requirements.extra, route settlement
         # through X402AgentReputation so the token transfer and the ticket mint land
         # atomically in one tx. Falls through to the standard path on any miss
         # so non-erc8004 traffic is untouched.
         if context is not None:
-            ticket_route = _maybe_route_to_ticket_minter(payload, requirements, context)
+            ticket_route = _maybe_route_to_ticket_minter(requirements, context)
             if ticket_route is not None:
                 from ....extensions.erc8004 import settle_via_wrapper
 
@@ -447,21 +447,20 @@ class ExactEvmScheme:
 
 
 def _maybe_route_to_ticket_minter(
-    payload: PaymentPayload,
     requirements: PaymentRequirements,
     context: Any,
 ) -> tuple[str, int] | None:
     """Decide whether settle should route through X402AgentReputation.
 
-    Returns ``(wrapper_address, agent_id)`` when the erc8004 extension is active and
-    the client echoed `agentId`; None otherwise so the caller falls through to the
-    standard transfer/proxy path. Deciding (not settling) here lets `settle` re-verify
-    the payment before minting the ticket.
+    Returns ``(wrapper_address, agent_id)`` when the erc8004 extension is active and the
+    server stamped `agentId` into `requirements.extra`; None otherwise so the caller falls
+    through to the standard transfer/proxy path. Deciding (not settling) here lets `settle`
+    re-verify the payment before minting the ticket.
 
     Guards:
       1. Facilitator registered `ERC8004TicketFacilitatorExtension`
       2. Extension resolves a wrapper address for the request network
-      3. Client echoed `agentId` in `payload.extensions.erc8004`
+      3. Server set `agentId` in `requirements.extra` (server-sourced, not client-echoed)
     """
     try:
         from ....extensions.erc8004 import (
@@ -480,7 +479,7 @@ def _maybe_route_to_ticket_minter(
     if not wrapper_address:
         return None
 
-    agent_id = extract_agent_id(payload)
+    agent_id = extract_agent_id(requirements)
     if agent_id is None:
         return None
 

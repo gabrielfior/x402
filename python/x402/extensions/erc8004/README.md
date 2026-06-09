@@ -4,7 +4,7 @@ x402 v2 extension that turns paid HTTP calls into ticket-gated, on-chain feedbac
 
 ## How it works
 
-1. **Pay.** Client signs x402 payment only (no ticket bind). Facilitator routes settle through `X402AgentReputation.settleAndMintTicket{EIP3009,Permit2}` (permissionless — gated by the signed authorization). Ticket fields are plain payment data: `payer`, `agentId`, `agentAddress`, `token`, `amount`, `consumed`.
+1. **Pay.** Client signs x402 payment only (no ticket bind, no agentId echo). The server stamps its `agentId` into the settle-time requirements; the facilitator routes settle through `X402AgentReputation.settleAndMintTicket{EIP3009,Permit2}` (permissionless — gated by the signed authorization) and the wrapper binds the minted `agentId` to the paid address (`ownerOf(agentId) == payTo`). Ticket fields are plain payment data: `payer`, `agentId`, `agentAddress`, `token`, `amount`, `consumed`.
 2. **Serve.** Agent runs handler, then best-effort signs EIP-712 `InteractionAttestation` → `X-X402-Interaction-Attestation` header (never blocks the 200).
 3. **Feedback.** Payer delegates its EOA to the `FeedbackGateway` (EIP-7702) — self-paid (`submitFeedback`) or sponsored via a signed `FeedbackIntent` (`submitFeedbackFor`). The gateway, running as the client, calls `X402AgentReputation.consumeTicket` (ticket `consumed=true`) and forwards `giveFeedback` to the **canonical** `ReputationRegistry`, authored by the client.
 4. **Verify.** Aggregators run `verify_feedback` → `FULL` / `CLIENT_ONLY` / `DISPUTED` / `REJECTED`.
@@ -15,11 +15,11 @@ Feedback is stored on the canonical ERC-8004 `ReputationRegistry`; the wrapper o
 
 | Side | Requirement |
 |------|-------------|
-| Resource server | `create_erc8004_resource_server_extension(config)` with `agent_id` |
-| Client | Optional for pay; echoes `agentId` from 402 into payment payload |
+| Resource server | `create_erc8004_resource_server_extension(config)` with `agent_id`; stamp `agentId` into the settle-time requirements via `set_requirements_agent_id(requirements, agent_id)` |
+| Client | Nothing erc8004-specific for pay — `agentId` is server-sourced, never echoed |
 | Facilitator | `ERC8004TicketFacilitatorExtension(wrappers={network: wrapper_addr})` |
 
-Settle routing guards: extension registered + wrapper address configured + `agentId` in `payload.extensions.erc8004`.
+Settle routing guards: extension registered + wrapper address configured + `agentId` in `requirements.extra` (server-set at settle, never client-supplied). The wrapper additionally binds the minted `agentId` to the paid address on-chain (`ownerOf(agentId) == payTo`).
 
 ## Server usage
 
@@ -61,7 +61,6 @@ response.headers = attach_interaction_attestation_header(dict(response.headers),
 
 ```python
 from x402.extensions.erc8004 import (
-    ERC8004ClientExtension,
     ERCFeedbackClient,
     ERC8004Config,
     FeedbackParams,
@@ -70,8 +69,8 @@ from x402.extensions.erc8004 import (
     compute_feedback_hash,
 )
 
-client.register_extension(ERC8004ClientExtension())
-
+# No client extension to register: agentId is server-sourced at settle, not echoed.
+# The client just pays normally and reads ticketId from PAYMENT-RESPONSE.
 feedback_client = ERCFeedbackClient(config, signer)
 ticket_id = int(payment_response.extensions["erc8004"]["ticketId"])
 
