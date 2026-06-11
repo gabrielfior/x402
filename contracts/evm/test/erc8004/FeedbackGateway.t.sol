@@ -363,4 +363,106 @@ contract FeedbackGatewayTest is Test {
         vm.expectRevert(FeedbackGateway.RegistryMismatch.selector);
         gateway.submitFeedbackFor(i, p, _signFeedback(i, payerPk));
     }
+
+    // ----- revokeFeedbackFor -----
+
+    bytes32 private constant REVOKE_INTENT_TYPEHASH =
+        keccak256("RevokeIntent(address payer,uint256 ticketId,uint256 nonce,uint256 deadline)");
+
+    function _signRevoke(IFeedbackGateway.RevokeIntent memory i, uint256 pk) internal view returns (bytes memory) {
+        bytes32 structHash =
+            keccak256(abi.encode(REVOKE_INTENT_TYPEHASH, i.payer, i.ticketId, i.nonce, i.deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _submitSelfPaid(uint256 ticketId, bytes32 h) internal {
+        vm.prank(payer);
+        gateway.submitFeedback(ticketId, _params(h));
+    }
+
+    function test_revoke_happyPath() public {
+        uint256 ticketId = _mintTicket();
+        _submitSelfPaid(ticketId, keccak256("fb1"));
+
+        IFeedbackGateway.RevokeIntent memory i =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 2, deadline: block.timestamp + 1 hours});
+
+        vm.expectEmit(true, true, true, true);
+        emit IFeedbackGateway.FeedbackRevokedFor(ticketId, payer, AGENT_ID, 1);
+
+        vm.prank(relayer);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, payerPk));
+
+        assertTrue(registry.isRevoked(AGENT_ID, address(gateway), 1));
+    }
+
+    function test_revoke_revertWhen_notOriginalPayer() public {
+        uint256 ticketId = _mintTicket();
+        _submitSelfPaid(ticketId, keccak256("fb1"));
+
+        uint256 strangerPk = 0x5152;
+        address stranger = vm.addr(strangerPk);
+        IFeedbackGateway.RevokeIntent memory i = IFeedbackGateway.RevokeIntent({
+            payer: stranger,
+            ticketId: ticketId,
+            nonce: 1,
+            deadline: block.timestamp + 1 hours
+        });
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.Unauthorized.selector);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, strangerPk));
+    }
+
+    function test_revoke_revertWhen_badSignature() public {
+        uint256 ticketId = _mintTicket();
+        _submitSelfPaid(ticketId, keccak256("fb1"));
+        IFeedbackGateway.RevokeIntent memory i =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 2, deadline: block.timestamp + 1 hours});
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.InvalidSignature.selector);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, 0xBAD));
+    }
+
+    function test_revoke_revertWhen_unknownFeedback() public {
+        uint256 ticketId = _mintTicket(); // minted but feedback never submitted
+        IFeedbackGateway.RevokeIntent memory i =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 1, deadline: block.timestamp + 1 hours});
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.UnknownFeedback.selector);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, payerPk));
+    }
+
+    function test_revoke_idempotentDoubleRevoke() public {
+        uint256 ticketId = _mintTicket();
+        _submitSelfPaid(ticketId, keccak256("fb1"));
+
+        IFeedbackGateway.RevokeIntent memory i1 =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 2, deadline: block.timestamp + 1 hours});
+        vm.prank(relayer);
+        gateway.revokeFeedbackFor(i1, _signRevoke(i1, payerPk));
+
+        // second revoke with a fresh nonce: registry reverts "Already revoked", gateway swallows it
+        IFeedbackGateway.RevokeIntent memory i2 =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 3, deadline: block.timestamp + 1 hours});
+        vm.expectEmit(true, true, true, true);
+        emit IFeedbackGateway.FeedbackRevokedFor(ticketId, payer, AGENT_ID, 1);
+        vm.prank(relayer);
+        gateway.revokeFeedbackFor(i2, _signRevoke(i2, payerPk));
+
+        assertTrue(registry.isRevoked(AGENT_ID, address(gateway), 1));
+    }
+
+    function test_revoke_revertWhen_nonceReused() public {
+        uint256 ticketId = _mintTicket();
+        _submitSelfPaid(ticketId, keccak256("fb1"));
+        IFeedbackGateway.RevokeIntent memory i =
+            IFeedbackGateway.RevokeIntent({payer: payer, ticketId: ticketId, nonce: 2, deadline: block.timestamp + 1 hours});
+        vm.startPrank(relayer);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, payerPk));
+        vm.expectRevert(FeedbackGateway.NonceUsed.selector);
+        gateway.revokeFeedbackFor(i, _signRevoke(i, payerPk));
+        vm.stopPrank();
+    }
 }

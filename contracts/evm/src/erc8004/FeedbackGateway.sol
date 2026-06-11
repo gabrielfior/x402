@@ -267,6 +267,29 @@ contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
         emit TicketConsumed(ticketId, payer, agentId, _tickets[ticketId].agentAddress, params.feedbackHash);
     }
 
+    /// @notice Revoke previously submitted feedback. Authorized by a client-signed `RevokeIntent`;
+    ///         only the ticket's original payer can revoke. Relayable (client pays no gas).
+    function revokeFeedbackFor(RevokeIntent calldata intent, bytes calldata signature) external {
+        if (block.timestamp > intent.deadline) revert IntentExpired();
+        if (usedNonces[intent.payer][intent.nonce]) revert NonceUsed();
+
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(abi.encode(REVOKE_INTENT_TYPEHASH, intent.payer, intent.ticketId, intent.nonce, intent.deadline))
+        );
+        if (digest.recover(signature) != intent.payer) revert InvalidSignature();
+        if (_tickets[intent.ticketId].payer != intent.payer) revert Unauthorized();
+
+        FeedbackRef memory ref = feedbackRef[intent.ticketId];
+        if (!ref.exists) revert UnknownFeedback();
+
+        usedNonces[intent.payer][intent.nonce] = true;
+
+        // Idempotent: a registry "Already revoked" revert is treated as success.
+        try reputationRegistry.revokeFeedback(ref.agentId, ref.feedbackIndex) {} catch {}
+
+        emit FeedbackRevokedFor(intent.ticketId, intent.payer, ref.agentId, ref.feedbackIndex);
+    }
+
     /// @dev Consume-once; `payer` must own the ticket; agent cannot review itself.
     function _consumeTicketFor(uint256 ticketId, address payer) internal returns (uint256 agentId) {
         Ticket storage ticket = _tickets[ticketId];
