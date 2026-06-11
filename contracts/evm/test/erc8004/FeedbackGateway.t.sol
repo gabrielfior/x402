@@ -278,8 +278,8 @@ contract FeedbackGatewayTest is Test {
         });
     }
 
-    function _signFeedback(IFeedbackGateway.FeedbackIntent memory i, uint256 pk) internal view returns (bytes memory) {
-        bytes32 structHash = keccak256(
+    function _feedbackStructHash(IFeedbackGateway.FeedbackIntent memory i) internal pure returns (bytes32) {
+        return keccak256(
             abi.encode(
                 FEEDBACK_INTENT_TYPEHASH,
                 i.registry, i.ticketId, i.agentId, i.payer,
@@ -288,6 +288,10 @@ contract FeedbackGatewayTest is Test {
                 i.nonce, i.deadline
             )
         );
+    }
+
+    function _signFeedback(IFeedbackGateway.FeedbackIntent memory i, uint256 pk) internal view returns (bytes memory) {
+        bytes32 structHash = _feedbackStructHash(i);
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
