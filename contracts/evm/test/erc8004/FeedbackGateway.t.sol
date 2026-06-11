@@ -3,23 +3,26 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {X402AgentReputation} from "../../src/erc8004/X402AgentReputation.sol";
-import {IX402AgentReputation} from "../../src/erc8004/interfaces/IX402AgentReputation.sol";
 import {FeedbackGateway} from "../../src/erc8004/FeedbackGateway.sol";
+import {IFeedbackGateway} from "../../src/erc8004/interfaces/IFeedbackGateway.sol";
+import {ISignatureTransfer} from "../../src/interfaces/ISignatureTransfer.sol";
+import {x402ExactPermit2Proxy} from "../../src/x402ExactPermit2Proxy.sol";
+import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockERC3009Token} from "../mocks/MockERC3009Token.sol";
+import {MockPermit2} from "../mocks/MockPermit2.sol";
 import {MockIdentityRegistry} from "./mocks/MockIdentityRegistry.sol";
 import {MockReputationRegistry} from "./mocks/MockReputationRegistry.sol";
 
-/// @dev Exercises the EIP-7702 feedback flow: a paying client delegates its EOA to the
-///      gateway, which consumes the ticket and forwards giveFeedback to the canonical
-///      registry — with the client as msg.sender (author) on both calls.
+/// @dev Exercises the merged FeedbackGateway: settle/mint, self-paid + sponsored feedback,
+///      and client-signed revocation. The registry records `msg.sender == gateway` as author.
 contract FeedbackGatewayTest is Test {
-    X402AgentReputation public wrapper;
     FeedbackGateway public gateway;
     MockReputationRegistry public registry;
     MockIdentityRegistry public identity;
+    MockERC20 public token;
     MockERC3009Token public t3009;
 
+    address public owner = makeAddr("owner");
     address public payTo = makeAddr("payTo");
     address public relayer = makeAddr("relayer");
 
@@ -27,41 +30,44 @@ contract FeedbackGatewayTest is Test {
     address public payer;
 
     uint256 public constant AGENT_ID = 7;
-
-    bytes32 private constant FEEDBACK_INTENT_TYPEHASH = keccak256(
-        "FeedbackIntent(address wrapper,address registry,uint256 ticketId,int128 value,uint8 valueDecimals,bytes32 tag1Hash,bytes32 tag2Hash,bytes32 endpointHash,bytes32 feedbackURIHash,bytes32 feedbackHash,uint256 nonce,uint256 deadline)"
-    );
+    uint256 private _nextNonce;
 
     function setUp() public {
         payer = vm.addr(payerPk);
 
         identity = new MockIdentityRegistry();
-        // pay_to == the agent's registered owner, so the mint-time binding holds.
-        identity.setOwner(AGENT_ID, payTo);
-
-        wrapper = new X402AgentReputation(address(this), address(0), address(identity));
+        identity.setOwner(AGENT_ID, payTo); // pay_to == agent owner, so mint-time binding holds
         registry = new MockReputationRegistry();
-        gateway = new FeedbackGateway();
 
+        gateway = new FeedbackGateway(owner, address(0), address(identity), address(registry));
+
+        token = new MockERC20("USDC", "USDC", 6);
+        token.mint(payer, 1_000e6);
         t3009 = new MockERC3009Token("USDC3009", "USDC", 6);
         t3009.mint(payer, 1_000e6);
     }
 
-    function _mintTicket(bytes32 nonce) internal returns (uint256 ticketId) {
-        IX402AgentReputation.EIP3009Settlement memory s = IX402AgentReputation.EIP3009Settlement({
+    // ----- helpers -----
+
+    function _mintTicketEIP3009(address from, uint256 value, bytes32 nonce) internal returns (uint256 ticketId) {
+        IFeedbackGateway.EIP3009Settlement memory s = IFeedbackGateway.EIP3009Settlement({
             token: address(t3009),
             payTo: payTo,
-            value: 10e6,
+            value: value,
             validAfter: 0,
             validBefore: type(uint256).max,
             nonce: nonce,
             signature: ""
         });
-        ticketId = wrapper.settleAndMintTicketEIP3009(payer, AGENT_ID, payTo, s);
+        ticketId = gateway.settleAndMintTicketEIP3009(from, AGENT_ID, payTo, s);
     }
 
-    function _params(bytes32 feedbackHash) internal pure returns (FeedbackGateway.FeedbackParams memory) {
-        return FeedbackGateway.FeedbackParams({
+    function _mintTicket() internal returns (uint256 ticketId) {
+        ticketId = _mintTicketEIP3009(payer, 10e6, keccak256(abi.encode("mint", _nextNonce++)));
+    }
+
+    function _params(bytes32 feedbackHash) internal pure returns (IFeedbackGateway.FeedbackParams memory) {
+        return IFeedbackGateway.FeedbackParams({
             value: 95,
             valueDecimals: 0,
             tag1: "quality",
@@ -72,110 +78,99 @@ contract FeedbackGatewayTest is Test {
         });
     }
 
-    function test_selfPaid_consumesTicketAndAuthorsFeedbackAsClient() public {
-        uint256 ticketId = _mintTicket(keccak256("t1"));
-        FeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+    // ----- settle + mint -----
 
-        // Client delegates its EOA to the gateway and calls itself (self-paid).
-        vm.signAndAttachDelegation(address(gateway), payerPk);
+    function test_settleAndMintTicket_mintsPlainFields() public {
+        uint256 ticketId = _mintTicketEIP3009(payer, 100e6, keccak256("plain"));
+
+        assertEq(ticketId, 1);
+        assertEq(t3009.balanceOf(payTo), 100e6);
+
+        IFeedbackGateway.Ticket memory ticket = gateway.tickets(ticketId);
+        assertEq(ticket.payer, payer);
+        assertEq(ticket.agentId, AGENT_ID);
+        assertEq(ticket.agentAddress, payTo);
+        assertEq(ticket.token, address(t3009));
+        assertEq(ticket.amount, 100e6);
+        assertFalse(ticket.consumed);
+    }
+
+    function test_ticketMinted_emittedForReceiptRecovery() public {
+        vm.expectEmit(true, true, true, true);
+        emit IFeedbackGateway.TicketMinted(1, payer, AGENT_ID, payTo, address(t3009), 50e6);
+        _mintTicketEIP3009(payer, 50e6, keccak256("emit"));
+    }
+
+    function test_revertWhen_payToMismatch() public {
+        IFeedbackGateway.EIP3009Settlement memory s = IFeedbackGateway.EIP3009Settlement({
+            token: address(t3009),
+            payTo: makeAddr("other"),
+            value: 1,
+            validAfter: 0,
+            validBefore: type(uint256).max,
+            nonce: keccak256("mismatch"),
+            signature: ""
+        });
+        vm.expectRevert(FeedbackGateway.PayToMismatch.selector);
+        gateway.settleAndMintTicketEIP3009(payer, AGENT_ID, payTo, s);
+    }
+
+    function test_revertWhen_invalidAgent() public {
+        IFeedbackGateway.EIP3009Settlement memory s = IFeedbackGateway.EIP3009Settlement({
+            token: address(t3009),
+            payTo: payTo,
+            value: 1,
+            validAfter: 0,
+            validBefore: type(uint256).max,
+            nonce: keccak256("badagent"),
+            signature: ""
+        });
+        vm.expectRevert(FeedbackGateway.InvalidAgent.selector);
+        gateway.settleAndMintTicketEIP3009(payer, 9999, payTo, s);
+    }
+
+    function test_revertWhen_agentAddressNotOwner() public {
+        address notOwner = makeAddr("notOwner");
+        IFeedbackGateway.EIP3009Settlement memory s = IFeedbackGateway.EIP3009Settlement({
+            token: address(t3009),
+            payTo: notOwner,
+            value: 1,
+            validAfter: 0,
+            validBefore: type(uint256).max,
+            nonce: keccak256("notowner"),
+            signature: ""
+        });
+        vm.expectRevert(FeedbackGateway.InvalidAgent.selector);
+        gateway.settleAndMintTicketEIP3009(payer, AGENT_ID, notOwner, s);
+    }
+
+    function test_settleAndMintTicketPermit2_mintsAndTransfers() public {
+        MockPermit2 permit2 = new MockPermit2();
+        permit2.setShouldActuallyTransfer(true);
+
+        x402ExactPermit2Proxy proxy = new x402ExactPermit2Proxy(address(permit2));
+        FeedbackGateway gw = new FeedbackGateway(owner, address(proxy), address(identity), address(registry));
+
         vm.prank(payer);
-        FeedbackGateway(payer).submitFeedback(address(wrapper), address(registry), ticketId, p);
+        token.approve(address(permit2), type(uint256).max);
 
-        assertTrue(wrapper.tickets(ticketId).consumed);
-        assertEq(registry.lastIndex(AGENT_ID, payer), 1, "feedback not attributed to client");
-        (uint256 agentId, address client,,) = registry.feedbacks(0);
-        assertEq(agentId, AGENT_ID);
-        assertEq(client, payer);
-    }
+        ISignatureTransfer.PermitTransferFrom memory permit = ISignatureTransfer.PermitTransferFrom({
+            permitted: ISignatureTransfer.TokenPermissions({token: address(token), amount: 75e6}),
+            nonce: 7,
+            deadline: block.timestamp + 1 hours
+        });
 
-    function test_selfPaid_revertWhen_notSelf() public {
-        uint256 ticketId = _mintTicket(keccak256("t1"));
-        FeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.Permit2Settlement memory s = IFeedbackGateway.Permit2Settlement({
+            permit: permit,
+            payTo: payTo,
+            validAfter: 0,
+            signature: ""
+        });
 
-        vm.signAndAttachDelegation(address(gateway), payerPk);
-        // A stranger (not the delegated EOA) calls submitFeedback -> Unauthorized.
-        vm.prank(relayer);
-        vm.expectRevert(FeedbackGateway.Unauthorized.selector);
-        FeedbackGateway(payer).submitFeedback(address(wrapper), address(registry), ticketId, p);
-    }
+        uint256 ticketId = gw.settleAndMintTicketPermit2(payer, AGENT_ID, payTo, s);
 
-    function test_sponsored_relayerSubmitsClientSignedIntent() public {
-        uint256 ticketId = _mintTicket(keccak256("t1"));
-        FeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
-        uint256 nonce = 1;
-        uint256 deadline = block.timestamp + 1 hours;
-
-        bytes memory sig = _signIntent(address(wrapper), address(registry), ticketId, p, nonce, deadline);
-
-        // Relayer pays gas; client's signed intent authorizes the exact feedback.
-        vm.signAndAttachDelegation(address(gateway), payerPk);
-        vm.prank(relayer);
-        FeedbackGateway(payer).submitFeedbackFor(
-            address(wrapper), address(registry), ticketId, p, nonce, deadline, sig
-        );
-
-        assertTrue(wrapper.tickets(ticketId).consumed);
-        assertEq(registry.lastIndex(AGENT_ID, payer), 1, "feedback not attributed to client");
-    }
-
-    function test_sponsored_revertWhen_badSignature() public {
-        uint256 ticketId = _mintTicket(keccak256("t1"));
-        FeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
-        uint256 nonce = 1;
-        uint256 deadline = block.timestamp + 1 hours;
-
-        // Sign with the wrong key.
-        uint256 wrongPk = 0xBAD;
-        bytes32 digest = _intentDigest(address(wrapper), address(registry), ticketId, p, nonce, deadline);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, digest);
-        bytes memory sig = abi.encodePacked(r, s, v);
-
-        vm.signAndAttachDelegation(address(gateway), payerPk);
-        vm.prank(relayer);
-        vm.expectRevert(FeedbackGateway.InvalidSignature.selector);
-        FeedbackGateway(payer).submitFeedbackFor(
-            address(wrapper), address(registry), ticketId, p, nonce, deadline, sig
-        );
-    }
-
-    function _intentDigest(
-        address wrapper_,
-        address registry_,
-        uint256 ticketId,
-        FeedbackGateway.FeedbackParams memory p,
-        uint256 nonce,
-        uint256 deadline
-    ) internal view returns (bytes32) {
-        bytes32 structHash = keccak256(
-            abi.encode(
-                FEEDBACK_INTENT_TYPEHASH,
-                wrapper_,
-                registry_,
-                ticketId,
-                p.value,
-                p.valueDecimals,
-                keccak256(bytes(p.tag1)),
-                keccak256(bytes(p.tag2)),
-                keccak256(bytes(p.endpoint)),
-                keccak256(bytes(p.feedbackURI)),
-                p.feedbackHash,
-                nonce,
-                deadline
-            )
-        );
-        return keccak256(abi.encodePacked("\x19\x01", gateway.domainSeparator(), structHash));
-    }
-
-    function _signIntent(
-        address wrapper_,
-        address registry_,
-        uint256 ticketId,
-        FeedbackGateway.FeedbackParams memory p,
-        uint256 nonce,
-        uint256 deadline
-    ) internal view returns (bytes memory) {
-        bytes32 digest = _intentDigest(wrapper_, registry_, ticketId, p, nonce, deadline);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(payerPk, digest);
-        return abi.encodePacked(r, s, v);
+        assertEq(ticketId, 1);
+        assertEq(token.balanceOf(payTo), 75e6);
+        assertFalse(gw.tickets(ticketId).consumed);
     }
 }

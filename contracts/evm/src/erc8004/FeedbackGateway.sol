@@ -1,146 +1,186 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-import {IX402AgentReputation} from "./interfaces/IX402AgentReputation.sol";
+import {IERC3009} from "../interfaces/IERC3009.sol";
+import {ISignatureTransfer} from "../interfaces/ISignatureTransfer.sol";
+import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
+import {IFeedbackGateway} from "./interfaces/IFeedbackGateway.sol";
 import {IReputationRegistry} from "./interfaces/IReputationRegistry.sol";
 
-/// @title FeedbackGateway
-/// @notice EIP-7702 delegate that turns a consumed x402 ticket into client-authored
-///         feedback on the canonical ERC-8004 ReputationRegistry.
-/// @dev A paying client delegates their EOA to this contract (EIP-7702 set-code auth). The
-///      entrypoints then execute *in the client's EOA context*, so the calls to
-///      `consumeTicket` and `giveFeedback` both run with `msg.sender == client` — feedback is
-///      stored on the canonical registry and authored by the client, while the ticket gates it.
-///
-///      Deploy once per chain: a stateless singleton (no funds, only replay nonces). Because
-///      delegation persists on the EOA until reset, the entrypoints are guarded — self-paid
-///      requires the EOA itself (`msg.sender == address(this)`), sponsored requires a
-///      client-signed EIP-712 `FeedbackIntent` binding the exact wrapper/registry/params.
-contract FeedbackGateway {
-    using ECDSA for bytes32;
-
-    struct FeedbackParams {
-        int128 value;
-        uint8 valueDecimals;
-        string tag1;
-        string tag2;
-        string endpoint;
-        string feedbackURI;
-        bytes32 feedbackHash;
+/// @notice Minimal view of the canonical x402ExactPermit2Proxy `settle` entrypoint.
+/// @dev Struct layout (to, validAfter) matches x402ExactPermit2Proxy.Witness so the ABI
+///      encoding is identical to the standard x402 Permit2 flow.
+interface IX402ExactPermit2Proxy {
+    struct Witness {
+        address to;
+        uint256 validAfter;
     }
 
-    bytes32 private constant FEEDBACK_INTENT_TYPEHASH = keccak256(
-        "FeedbackIntent(address wrapper,address registry,uint256 ticketId,int128 value,uint8 valueDecimals,bytes32 tag1Hash,bytes32 tag2Hash,bytes32 endpointHash,bytes32 feedbackURIHash,bytes32 feedbackHash,uint256 nonce,uint256 deadline)"
-    );
+    function settle(
+        ISignatureTransfer.PermitTransferFrom calldata permit,
+        address owner,
+        Witness calldata witness,
+        bytes calldata signature
+    ) external;
+}
 
-    /// @dev Fixed EIP-712 domain separator (verifyingContract = this gateway's deployed
-    ///      address). Computed at construction and read as an immutable so it stays correct
-    ///      even when the code runs under EIP-7702 delegation, where `address(this)` is the
-    ///      client EOA rather than the gateway.
-    ///
-    ///      NB: do NOT replace this with OpenZeppelin `EIP712`. Its `_domainSeparatorV4()`
-    ///      caches `address(this)` at construction and *rebuilds* the separator whenever the
-    ///      runtime `address(this)` differs — which under 7702 delegation is the client EOA.
-    ///      That would set `verifyingContract` to the EOA and break recovery of intents the
-    ///      client signed against the gateway address. The immutable below is inlined into the
-    ///      gateway's runtime bytecode, so it survives delegated execution unchanged.
-    bytes32 private immutable _DOMAIN_SEPARATOR;
+/// @title FeedbackGateway
+/// @notice One contract: settles x402 payments, mints/consumes single-use tickets, and submits
+///         (and revokes) ticket-gated feedback on the canonical ERC-8004 ReputationRegistry.
+/// @dev The gateway itself calls `giveFeedback`, so the registry records `clientAddress ==
+///      address(this)`. The real payer is recovered off-chain by joining `TicketConsumed`
+///      (carries `payer` + `feedbackHash`) to the registry's `NewFeedback` on `feedbackHash`.
+///      Replaces the prior two-contract (X402AgentReputation + EIP-7702 delegate) design; no
+///      delegation, so `address(this)` is stable and OZ `EIP712` is safe.
+contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
+    using ECDSA for bytes32;
 
-    /// @dev signer (== `address(this)` under delegation) => nonce => used.
+    IX402ExactPermit2Proxy public immutable PERMIT2_PROXY;
+    IIdentityRegistry public immutable identityRegistry;
+    IReputationRegistry public immutable reputationRegistry;
+
+    mapping(uint256 => Ticket) private _tickets;
+    mapping(uint256 => FeedbackRef) public feedbackRef;
+    mapping(bytes32 => bool) public usedFeedbackHashes;
     mapping(address => mapping(uint256 => bool)) public usedNonces;
 
+    uint256 private _nextTicketId = 1;
+
+    bytes32 private constant FEEDBACK_INTENT_TYPEHASH = keccak256(
+        "FeedbackIntent(address registry,uint256 ticketId,uint256 agentId,address payer,int128 value,uint8 valueDecimals,bytes32 tag1Hash,bytes32 tag2Hash,bytes32 endpointHash,bytes32 feedbackURIHash,bytes32 feedbackHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant REVOKE_INTENT_TYPEHASH =
+        keccak256("RevokeIntent(address payer,uint256 ticketId,uint256 nonce,uint256 deadline)");
+
+    error InvalidPayment();
+    error InvalidPermit2();
+    error InvalidAgent();
+    error InvalidTicket();
+    error SelfFeedbackNotAllowed();
+    error ZeroAddress();
+    error PayToMismatch();
     error Unauthorized();
+    error DuplicateFeedbackHash();
+    error UnknownFeedback();
     error IntentExpired();
     error NonceUsed();
     error InvalidSignature();
+    error RegistryMismatch();
+    error ParamsMismatch();
 
-    constructor() {
-        _DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes("X402FeedbackGateway")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
+    /// @param owner_ Reserved admin handle (currently no privileged functions).
+    /// @param permit2Proxy_ Canonical x402ExactPermit2Proxy; `address(0)` disables Permit2 settlement.
+    /// @param identityRegistry_ ERC-8004 identity registry; `agentId` must exist at mint time.
+    /// @param reputationRegistry_ Canonical ERC-8004 ReputationRegistry feedback is submitted to.
+    constructor(address owner_, address permit2Proxy_, address identityRegistry_, address reputationRegistry_)
+        Ownable(owner_)
+        EIP712("FeedbackGateway", "1")
+    {
+        if (identityRegistry_ == address(0) || reputationRegistry_ == address(0)) revert ZeroAddress();
+        identityRegistry = IIdentityRegistry(identityRegistry_);
+        reputationRegistry = IReputationRegistry(reputationRegistry_);
+        PERMIT2_PROXY = IX402ExactPermit2Proxy(permit2Proxy_);
+    }
+
+    // ----------------------------------------------------------------- settle + mint
+
+    function settleAndMintTicketEIP3009(
+        address payer,
+        uint256 agentId,
+        address agentAddress,
+        EIP3009Settlement calldata settlement
+    ) external returns (uint256 ticketId) {
+        _validateMintPayment(payer, agentAddress, settlement.token, settlement.payTo, settlement.value);
+        IERC3009(settlement.token).transferWithAuthorization(
+            payer,
+            settlement.payTo,
+            settlement.value,
+            settlement.validAfter,
+            settlement.validBefore,
+            settlement.nonce,
+            settlement.signature
         );
+        ticketId = _mintTicket(payer, agentId, agentAddress, settlement.token, settlement.value);
     }
 
-    function domainSeparator() external view returns (bytes32) {
-        return _DOMAIN_SEPARATOR;
-    }
+    function settleAndMintTicketPermit2(
+        address payer,
+        uint256 agentId,
+        address agentAddress,
+        Permit2Settlement calldata settlement
+    ) external returns (uint256 ticketId) {
+        if (address(PERMIT2_PROXY) == address(0)) revert InvalidPermit2();
+        address token = settlement.permit.permitted.token;
+        uint256 amount = settlement.permit.permitted.amount;
+        _validateMintPayment(payer, agentAddress, token, settlement.payTo, amount);
 
-    /// @notice Self-paid feedback: the client EOA (delegated to this code) calls itself.
-    /// @dev `msg.sender == address(this)` holds only when the delegated EOA is the tx sender.
-    function submitFeedback(
-        address wrapper,
-        address registry,
-        uint256 ticketId,
-        FeedbackParams calldata params
-    ) external {
-        if (msg.sender != address(this)) revert Unauthorized();
-        _submit(wrapper, registry, ticketId, params);
-    }
-
-    /// @notice Sponsored feedback: a relayer calls the delegated client EOA; a client-signed
-    ///         EIP-712 `FeedbackIntent` authorizes the exact wrapper/registry/params.
-    function submitFeedbackFor(
-        address wrapper,
-        address registry,
-        uint256 ticketId,
-        FeedbackParams calldata params,
-        uint256 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external {
-        if (block.timestamp > deadline) revert IntentExpired();
-        if (usedNonces[address(this)][nonce]) revert NonceUsed();
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                FEEDBACK_INTENT_TYPEHASH,
-                wrapper,
-                registry,
-                ticketId,
-                params.value,
-                params.valueDecimals,
-                keccak256(bytes(params.tag1)),
-                keccak256(bytes(params.tag2)),
-                keccak256(bytes(params.endpoint)),
-                keccak256(bytes(params.feedbackURI)),
-                params.feedbackHash,
-                nonce,
-                deadline
-            )
+        PERMIT2_PROXY.settle(
+            settlement.permit,
+            payer,
+            IX402ExactPermit2Proxy.Witness({to: settlement.payTo, validAfter: settlement.validAfter}),
+            settlement.signature
         );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _DOMAIN_SEPARATOR, structHash));
-        if (digest.recover(signature) != address(this)) revert InvalidSignature();
 
-        usedNonces[address(this)][nonce] = true;
-        _submit(wrapper, registry, ticketId, params);
+        ticketId = _mintTicket(payer, agentId, agentAddress, token, amount);
     }
 
-    /// @dev Consume the caller's ticket (gating), then forward feedback to the canonical
-    ///      registry. Both calls run as the client EOA under delegation, so the registry
-    ///      records the client as author and binds feedback to the paid `agentId`.
-    function _submit(
-        address wrapper,
-        address registry,
-        uint256 ticketId,
-        FeedbackParams calldata params
-    ) internal {
-        uint256 agentId = IX402AgentReputation(wrapper).consumeTicket(ticketId);
-        IReputationRegistry(registry).giveFeedback(
-            agentId,
-            params.value,
-            params.valueDecimals,
-            params.tag1,
-            params.tag2,
-            params.endpoint,
-            params.feedbackURI,
-            params.feedbackHash
-        );
+    function tickets(uint256 ticketId) external view returns (Ticket memory) {
+        return _tickets[ticketId];
     }
+
+    function nextTicketId() external view returns (uint256) {
+        return _nextTicketId;
+    }
+
+    function _validateMintPayment(
+        address payer,
+        address agentAddress,
+        address token,
+        address payTo,
+        uint256 amount
+    ) internal pure {
+        if (
+            payer == address(0) || agentAddress == address(0) || token == address(0) || payTo == address(0)
+                || amount == 0
+        ) {
+            revert InvalidPayment();
+        }
+        if (payTo != agentAddress) revert PayToMismatch();
+    }
+
+    function _mintTicket(address payer, uint256 agentId, address agentAddress, address token, uint256 amount)
+        internal
+        returns (uint256 ticketId)
+    {
+        _requireAgentBinding(agentId, agentAddress);
+
+        ticketId = _nextTicketId++;
+        _tickets[ticketId] = Ticket({
+            payer: payer,
+            agentId: agentId,
+            agentAddress: agentAddress,
+            token: token,
+            amount: amount,
+            consumed: false
+        });
+
+        emit TicketMinted(ticketId, payer, agentId, agentAddress, token, amount);
+    }
+
+    /// @dev Bind the ticket's `agentId` to the address that received payment.
+    function _requireAgentBinding(uint256 agentId, address agentAddress) internal view {
+        try identityRegistry.ownerOf(agentId) returns (address owner) {
+            if (owner != agentAddress) revert InvalidAgent();
+        } catch {
+            revert InvalidAgent();
+        }
+    }
+
+    // --------------------------------------------------------------- feedback (Tasks 3–5)
+    // submitFeedback / submitFeedbackFor / revokeFeedbackFor / _submitFeedback /
+    // _consumeTicketFor are added in subsequent tasks.
 }
