@@ -173,4 +173,68 @@ contract FeedbackGatewayTest is Test {
         assertEq(token.balanceOf(payTo), 75e6);
         assertFalse(gw.tickets(ticketId).consumed);
     }
+
+    // ----- self-paid submitFeedback -----
+
+    function test_selfPaid_consumesAuthorsAndCapturesIndex() public {
+        uint256 ticketId = _mintTicket();
+        bytes32 h = keccak256("fb1");
+
+        vm.expectEmit(true, true, true, true);
+        emit IFeedbackGateway.TicketConsumed(ticketId, payer, AGENT_ID, payTo, h);
+
+        vm.prank(payer);
+        gateway.submitFeedback(ticketId, _params(h));
+
+        assertTrue(gateway.tickets(ticketId).consumed);
+        // gateway is the registry author
+        assertEq(registry.lastIndex(AGENT_ID, address(gateway)), 1);
+        assertTrue(gateway.usedFeedbackHashes(h));
+        (uint256 agentId, uint64 idx, bool exists) = gateway.feedbackRef(ticketId);
+        assertEq(agentId, AGENT_ID);
+        assertEq(idx, 1);
+        assertTrue(exists);
+    }
+
+    function test_selfPaid_revertWhen_notPayer() public {
+        uint256 ticketId = _mintTicket();
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.Unauthorized.selector);
+        gateway.submitFeedback(ticketId, _params(keccak256("fb1")));
+    }
+
+    function test_selfPaid_revertWhen_unknownTicket() public {
+        vm.prank(payer);
+        vm.expectRevert(FeedbackGateway.Unauthorized.selector); // ticket.payer == 0 != msg.sender
+        gateway.submitFeedback(999, _params(keccak256("fb1")));
+    }
+
+    function test_selfPaid_revertWhen_reuseTicket() public {
+        uint256 ticketId = _mintTicket();
+        vm.startPrank(payer);
+        gateway.submitFeedback(ticketId, _params(keccak256("fb1")));
+        vm.expectRevert(FeedbackGateway.InvalidTicket.selector);
+        gateway.submitFeedback(ticketId, _params(keccak256("fb2")));
+        vm.stopPrank();
+    }
+
+    function test_selfPaid_revertWhen_duplicateFeedbackHash() public {
+        uint256 t1 = _mintTicket();
+        uint256 t2 = _mintTicket();
+        bytes32 h = keccak256("dup");
+        vm.startPrank(payer);
+        gateway.submitFeedback(t1, _params(h));
+        vm.expectRevert(FeedbackGateway.DuplicateFeedbackHash.selector);
+        gateway.submitFeedback(t2, _params(h));
+        vm.stopPrank();
+    }
+
+    function test_selfPaid_revertWhen_selfFeedback() public {
+        // Ticket whose payer is the agent owner (== payTo): the agent cannot review itself.
+        t3009.mint(payTo, 100e6);
+        uint256 ticketId = _mintTicketEIP3009(payTo, 10e6, keccak256("self"));
+        vm.prank(payTo);
+        vm.expectRevert(FeedbackGateway.SelfFeedbackNotAllowed.selector);
+        gateway.submitFeedback(ticketId, _params(keccak256("fb-self")));
+    }
 }

@@ -180,7 +180,47 @@ contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
         }
     }
 
-    // --------------------------------------------------------------- feedback (Tasks 3–5)
-    // submitFeedback / submitFeedbackFor / revokeFeedbackFor / _submitFeedback /
-    // _consumeTicketFor are added in subsequent tasks.
+    // ----------------------------------------------------------------- feedback
+
+    /// @notice Self-paid: the ticket's payer submits their own feedback (pays gas).
+    function submitFeedback(uint256 ticketId, FeedbackParams calldata params) external {
+        if (_tickets[ticketId].payer != msg.sender) revert Unauthorized();
+        _submitFeedback(msg.sender, ticketId, params);
+    }
+
+    /// @dev Consume the ticket (gating), dedup the hash, forward `giveFeedback` as the gateway,
+    ///      capture the assigned index, and emit `TicketConsumed` carrying the real payer + hash.
+    function _submitFeedback(address payer, uint256 ticketId, FeedbackParams calldata params) internal {
+        uint256 agentId = _consumeTicketFor(ticketId, payer);
+
+        if (usedFeedbackHashes[params.feedbackHash]) revert DuplicateFeedbackHash();
+        usedFeedbackHashes[params.feedbackHash] = true;
+
+        reputationRegistry.giveFeedback(
+            agentId,
+            params.value,
+            params.valueDecimals,
+            params.tag1,
+            params.tag2,
+            params.endpoint,
+            params.feedbackURI,
+            params.feedbackHash
+        );
+
+        // Sole submitter + same synchronous call => this equals the index just assigned.
+        uint64 idx = reputationRegistry.getLastIndex(agentId, address(this));
+        feedbackRef[ticketId] = FeedbackRef({agentId: agentId, feedbackIndex: idx, exists: true});
+
+        emit TicketConsumed(ticketId, payer, agentId, _tickets[ticketId].agentAddress, params.feedbackHash);
+    }
+
+    /// @dev Consume-once; `payer` must own the ticket; agent cannot review itself.
+    function _consumeTicketFor(uint256 ticketId, address payer) internal returns (uint256 agentId) {
+        Ticket storage ticket = _tickets[ticketId];
+        if (ticket.payer == address(0) || ticket.consumed) revert InvalidTicket();
+        if (ticket.payer != payer) revert InvalidTicket();
+        if (identityRegistry.isAuthorizedOrOwner(payer, ticket.agentId)) revert SelfFeedbackNotAllowed();
+        ticket.consumed = true;
+        agentId = ticket.agentId;
+    }
 }
