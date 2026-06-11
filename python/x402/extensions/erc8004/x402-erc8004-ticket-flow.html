@@ -50,41 +50,57 @@
     </style>
 </head>
 <body>
-    <h1>x402 × ERC-8004 — ticket flow (v2)</h1>
-    <p class="sub">1-step x402 (same URL). Spec: <code>specs/extensions/erc8004_ticket_v2.md</code></p>
+    <h1>x402 × ERC-8004 — ticket flow (one contract)</h1>
+    <p class="sub">1-step x402 (same URL). One contract: <code>FeedbackGateway</code>. Spec: <code>specs/extensions/erc8004_ticket_v2.md</code></p>
 
-    <h2>What we added: two small contracts</h2>
+    <h2>What we added: one contract</h2>
     <div class="cards">
         <div class="card contract">
-            <span class="tag">Contract 1 · the ticket</span>
-            <h3>X402AgentReputation</h3>
-            <p class="lead">A paid x402 call mints a <strong>consume-once ticket</strong> — proof "this client paid this agent."</p>
+            <span class="tag">Contract · the gateway</span>
+            <h3>FeedbackGateway</h3>
+            <p class="lead">Settles the x402 payment, mints a single-use <b>ticket</b>, then itself submits ticket-gated feedback to the canonical ERC-8004 <code>ReputationRegistry</code>.</p>
             <ul>
-                <li>Settles <strong>exactly like x402</strong> — EIP-3009 (USDC) or Permit2 via the canonical proxy (DAI) — then mints in the same tx.</li>
-                <li><strong>Permissionless:</strong> anyone can relay a signed payment; no facilitator allowlist.</li>
-                <li>Stores plain payment data only: <code>payer, agentId, agentAddress, token, amount, consumed</code>.</li>
-                <li>Calls: <code>settleAndMintTicket…()</code> → <code>ticketId</code>; <code>consumeTicket(ticketId)</code> → <code>agentId</code>.</li>
+                <li><code>settleAndMintTicket{EIP3009,Permit2}</code> — pay → mint ticket (binds payer + agentId)</li>
+                <li><code>submitFeedback</code> — self-paid: payer consumes ticket + calls <code>giveFeedback</code></li>
+                <li><code>submitFeedbackFor</code> — sponsored: relayer submits a client-signed <code>FeedbackIntent</code></li>
+                <li><code>revokeFeedbackFor</code> — client-signed revoke, relayed to the registry</li>
             </ul>
         </div>
-        <div class="card contract">
-            <span class="tag">Contract 2 · the feedback bridge</span>
-            <h3>FeedbackGateway <span style="font-weight:400;font-size:0.75rem;color:var(--muted)">(EIP-7702)</span></h3>
-            <p class="lead">Turns a ticket into <strong>client-authored feedback on the canonical ERC-8004 registry</strong>.</p>
+        <div class="card">
+            <span class="tag">Canonical · unchanged</span>
+            <h3>ReputationRegistry (v2)</h3>
+            <p class="lead">The deployed ERC-8004 registry. Records feedback keyed by <code>msg.sender</code> — which here is always the gateway.</p>
             <ul>
-                <li>The client <strong>delegates its EOA</strong> to this contract (EIP-7702). Its code then runs <em>as the client</em> — so <code>msg.sender</code> stays the client.</li>
-                <li>In one call: <code>consumeTicket</code> (gate) → <code>ReputationRegistry.giveFeedback</code> (author = client).</li>
-                <li><strong>Self-paid</strong> <code>submitFeedback</code> · <strong>sponsored</strong> <code>submitFeedbackFor</code> (client-signed intent, relayer pays gas).</li>
-                <li>Stateless chain-singleton — deploy once per chain, holds no funds.</li>
+                <li>No upgrade required; no ticket awareness needed</li>
+                <li><code>clientAddress == FeedbackGateway</code> for every payment-backed feedback</li>
+                <li>Real payer recovered off-chain (see below)</li>
             </ul>
         </div>
     </div>
     <div class="why">
-        <strong>Why two contracts?</strong> The canonical <code>ReputationRegistry</code> credits feedback to <code>msg.sender</code>, so the client must be the caller. EIP-7702 makes that possible — but delegating your EOA to a contract is risky, so the delegate (<code>FeedbackGateway</code>) is kept tiny and fund-free, separate from the payment/ticket logic.
+        <b>Why one contract (no EIP-7702).</b> The gateway calls <code>giveFeedback</code> itself, so the
+        registry sees <code>msg.sender == gateway</code>. We give up <i>on-chain</i> per-client attribution and
+        recover the real payer <i>off-chain</i> instead — which removes the EIP-7702 delegate and the second
+        contract entirely. Filtering <code>NewFeedback</code> by <code>clientAddress == FeedbackGateway</code>
+        yields exactly the payment-backed set (unforgeable — no one else can be that <code>msg.sender</code>).
     </div>
-    <div class="pipe">pay (HTTP 402) ─▶ <b>X402AgentReputation</b>: settle + mint ticket
-                   │
-   delegate EOA (7702) ─▶ <b>FeedbackGateway</b> ──▶ consumeTicket ──▶ canonical <b>ReputationRegistry</b>.giveFeedback
-                                                  (runs as the client — feedback authored by the payer)</div>
+    <div class="pipe">client pays x402  →  <b>FeedbackGateway.settleAndMintTicket</b>  →  Ticket{payer, agentId, agentAddress}
+client builds artifact + feedbackHash (commits ticketId, payer, agentId)
+  ├─ self-paid:   payer → <b>FeedbackGateway.submitFeedback(ticketId, params)</b>
+  └─ sponsored:   relayer → <b>FeedbackGateway.submitFeedbackFor(intent, params, sig)</b>   (client signs, pays 0 gas)
+        └─ consume ticket  →  registry.<b>giveFeedback</b>(... feedbackHash)  →  capture feedbackRef[ticketId]
+        └─ emit <b>TicketConsumed</b>(ticketId, payer, agentId, agentAddress, feedbackHash)
+revoke:  payer signs RevokeIntent → <b>FeedbackGateway.revokeFeedbackFor</b> → registry.revokeFeedback(agentId, idx)</div>
+
+    <h2>Off-chain payer recovery (aggregators)</h2>
+    <p class="sub">The registry event has no payer; recover it by joining on <code>feedbackHash</code>.</p>
+    <div class="pipe">1. filter <b>NewFeedback</b> where clientAddress == FEEDBACK_GATEWAY_ADDR     (payment-backed set)
+2. join <b>NewFeedback</b>.feedbackHash == <b>TicketConsumed</b>.feedbackHash
+3. payer = TicketConsumed.payer        // the real customer (bound at mint)
+   assert TicketConsumed.agentId == NewFeedback.agentId
+   (on-chain feedbackHash uniqueness makes the join 1:1; verify artifact.settlement.payer == payer)</div>
+    <p class="sub">Counting: enumerate from <code>TicketConsumed</code> (one per consumed ticket), not from
+    <code>NewFeedback</code>. Invariant: payment-backed feedback ≤ tickets consumed ≤ payments made.</p>
 
     <h2>Trust split</h2>
     <div class="trust">
@@ -99,7 +115,7 @@
     <h2>Summary</h2>
     <div class="summary">
         <ul>
-            <li><strong>Contracts:</strong> <code>X402AgentReputation</code> — x402 settle + consume-once ticket. <code>FeedbackGateway</code> (EIP-7702 delegate) consumes the ticket and forwards <code>giveFeedback</code> to the <strong>canonical</strong> <code>ReputationRegistry</code> — feedback is stored there, authored by the client.</li>
+            <li><strong>Contract:</strong> <code>FeedbackGateway</code> — settles x402, mints a single-use ticket, then itself calls <code>giveFeedback</code> on the <strong>canonical</strong> <code>ReputationRegistry</code>. The registry records <code>clientAddress == FeedbackGateway</code>; real payer recovered off-chain via <code>TicketConsumed</code>.</li>
             <li><strong>No bind at mint:</strong> client signs payment only; settlement is permissionless (gated by the signed authorization), so no facilitator allowlist. <code>agentId</code> is server-sourced at settle (never sent to or echoed by the client) and bound on-chain to the paid address.</li>
             <li><strong>Attestation:</strong> agent signs EIP-712 after handler → <code>X-X402-Interaction-Attestation</code> (best-effort; missing → <code>CLIENT_ONLY</code>).</li>
         </ul>
@@ -128,7 +144,7 @@
                     <td><code>InteractionAttestation</code></td>
                     <td>Agent owner</td>
                     <td>After handler</td>
-                    <td>EIP-712 domain <code>("X402AgentReputation","1")</code>, verifyingContract = wrapper</td>
+                    <td>EIP-712 domain <code>("FeedbackGateway","1")</code>, verifyingContract = gateway</td>
                 </tr>
                 <tr>
                     <td><code>feedbackHash</code></td>
@@ -142,8 +158,8 @@
 
     <h2>Feedback paths</h2>
     <div class="feedback-paths">
-        <div class="path"><strong>Path A — Self-paid (EIP-7702):</strong> payer delegates its EOA to <code>FeedbackGateway</code> and calls <code>submitFeedback</code> on itself → <code>consumeTicket</code> + canonical <code>giveFeedback</code> (<code>msg.sender</code> = client).</div>
-        <div class="path"><strong>Path B — Sponsored (EIP-7702):</strong> payer signs a set-code authorization + EIP-712 <code>FeedbackIntent</code>; a relayer submits <code>submitFeedbackFor</code> and pays gas. Feedback is still authored by the client.</div>
+        <div class="path"><strong>Path A — Self-paid:</strong> payer calls <code>FeedbackGateway.submitFeedback(ticketId, params)</code> directly → consume ticket + <code>FeedbackGateway</code> calls canonical <code>giveFeedback</code>.</div>
+        <div class="path"><strong>Path B — Sponsored:</strong> payer signs an EIP-712 <code>FeedbackIntent</code>; a relayer submits <code>FeedbackGateway.submitFeedbackFor(intent, params, sig)</code> and pays gas. The gateway verifies the signature, consumes the ticket, and calls <code>giveFeedback</code>.</div>
     </div>
 
     <h2>Phases (one paid request)</h2>
@@ -173,8 +189,8 @@
         <p>200 + body + PAYMENT-RESPONSE + optional <code>X-X402-Interaction-Attestation</code>.</p>
     </div>
     <div class="phase chain new">
-        <h3>6 — Feedback (later, EIP-7702)</h3>
-        <p>Client builds the artifact (embeds attestation when present), delegates its EOA to <code>FeedbackGateway</code> → <code>consumeTicket</code> (ticket <code>consumed=true</code>) + canonical <code>ReputationRegistry.giveFeedback</code>, authored by the client.</p>
+        <h3>6 — Feedback (later)</h3>
+        <p>Client builds the artifact (embeds attestation when present), calls <code>FeedbackGateway.submitFeedback</code> (self-paid) or provides a signed <code>FeedbackIntent</code> for a relayer → gateway consumes ticket + calls <code>ReputationRegistry.giveFeedback</code>.</p>
     </div>
     <div class="phase">
         <h3>7 — Off-chain verify</h3>
@@ -182,7 +198,7 @@
     </div>
 
     <h2>Sequence</h2>
-    <div class="ascii"><span class="dim">                         Client (payer)     Agent server        Facilitator         X402AgentReputation
+    <div class="ascii"><span class="dim">                         Client (payer)     Agent server        Facilitator          FeedbackGateway
                               |                  |                   |                         |
 </span><span class="dim"> 0  DISCOVER                 |                  |                   |                         |
                               |-- GET /resource ->|                   |                         |
@@ -209,18 +225,20 @@
 </span><span class="dim"> 5  RESPONSE                 |<- 200 + body -----|                   |                         |
                               |    PAYMENT-RESPONSE.ticketId + optional attestation header    |
                               |                  |                   |                         |
-</span><span class="new"> 6  FEEDBACK (7702)          | client delegates EOA -> FeedbackGateway (set-code auth)
-                              |   A self-paid: submitFeedback   B sponsored: relayer submitFeedbackFor
-                              |   gateway (as client) -> W.consumeTicket (consumed=true)
-                              |   gateway (as client) -> ReputationRegistry.giveFeedback (canonical, author=client)
+</span><span class="new"> 6  FEEDBACK (later)         |
+                              |   A self-paid: client -> FeedbackGateway.submitFeedback(ticketId, params)
+                              |   B sponsored:  client signs FeedbackIntent; relayer -> FeedbackGateway.submitFeedbackFor
+                              |   gateway -> consumeTicket (internal, ticket consumed=true)
+                              |   gateway -> ReputationRegistry.giveFeedback (clientAddress = gateway)
+                              |   emit TicketConsumed(ticketId, payer, agentId, agentAddress, feedbackHash)
                               |                  |                   |                         |
-</span><span class="dim"> 7  VERIFY (off-chain)       | verify_feedback(artifact, wrapper, identityRegistry)        |
+</span><span class="dim"> 7  VERIFY (off-chain)       | verify_feedback(artifact, gateway, identityRegistry)        |
                               | FULL if attestation matches; CLIENT_ONLY if header missing    |
-
+</span>
 <span class="dim">  --- paid HTTP ends at step 5; feedback step 6 is async ---</span></div>
 
     <h2>Events — what off-chain aggregators see</h2>
-    <p class="sub" style="margin-bottom:0.5rem">The <code>FeedbackGateway</code> emits <strong>nothing</strong> — it's transparent. Everything observable comes from the ticket contract and the canonical registry. (<code>*</code> = indexed / topic.)</p>
+    <p class="sub" style="margin-bottom:0.5rem"><code>FeedbackGateway</code> emits <code>TicketMinted</code> and <code>TicketConsumed</code>; the canonical registry emits <code>NewFeedback</code> / <code>FeedbackRevoked</code> / <code>ResponseAppended</code>. (<code>*</code> = indexed / topic.)</p>
     <div class="hashes">
         <table>
             <thead>
@@ -228,16 +246,16 @@
             </thead>
             <tbody>
                 <tr>
-                    <td><strong>X402AgentReputation</strong></td>
+                    <td><strong>FeedbackGateway</strong></td>
                     <td><code>TicketMinted</code></td>
                     <td>Settle + mint (the paid call)</td>
                     <td><code>ticketId*, payer*, agentId*</code>, agentAddress, token, amount</td>
                 </tr>
                 <tr>
-                    <td><strong>X402AgentReputation</strong></td>
+                    <td><strong>FeedbackGateway</strong></td>
                     <td><code>TicketConsumed</code></td>
-                    <td>Feedback tx (gateway calls it)</td>
-                    <td><code>ticketId*, payer*, agentId*</code>, agentAddress</td>
+                    <td>Feedback tx (gateway consumes + calls registry)</td>
+                    <td><code>ticketId*, payer*, agentId*</code>, agentAddress, feedbackHash</td>
                 </tr>
                 <tr>
                     <td><strong>ReputationRegistry</strong><br><span class="tag">canonical ERC-8004</span></td>
@@ -261,38 +279,29 @@
         </table>
     </div>
 
-    <div class="pipe">PAYMENT tx
+    <div class="pipe">PAYMENT tx   (FeedbackGateway.settleAndMintTicket*)
   <b>TicketMinted</b>(ticketId, payer, agentId, token, amount)
         │  ticketId
         ▼
-FEEDBACK tx   ── one EIP-7702 tx emits BOTH ──────────────────────────────
-  <b>TicketConsumed</b>(ticketId, payer, agentId, agentAddress)   ◀─ payment-proof / gate
-  <b>NewFeedback</b>(agentId, clientAddress = payer, idx, …, feedbackHash, feedbackURI)
+FEEDBACK tx   (FeedbackGateway.submitFeedback or submitFeedbackFor)
+  <b>TicketConsumed</b>(ticketId, payer, agentId, agentAddress, feedbackHash)   ◀─ payment-proof / gate
+  <b>NewFeedback</b>(agentId, clientAddress = FeedbackGateway, idx, …, feedbackHash, feedbackURI)
         │  (agentId, clientAddress, idx)            feedbackHash ─▶ artifact @ feedbackURI ─▶ InteractionAttestation
+        │  join TicketConsumed.feedbackHash == NewFeedback.feedbackHash  →  payer = TicketConsumed.payer
         ▼
 LATER (optional)
-  <b>FeedbackRevoked</b>(agentId, clientAddress, idx)       ◀─ client retracts
+  <b>FeedbackRevoked</b>(agentId, clientAddress, idx)       ◀─ client retracts (via revokeFeedbackFor)
   <b>ResponseAppended</b>(agentId, clientAddress, idx, responder = agent, …)  ◀─ agent rebuts</div>
 
     <div class="why">
         <strong>Join keys for aggregators.</strong>
         <strong>ticketId</strong> links <code>TicketMinted</code> ↔ <code>TicketConsumed</code> (ticket lifecycle).
-        <strong>Same tx</strong> + matching <code>agentId</code> + <code>TicketConsumed.payer == NewFeedback.clientAddress</code> links the gate to the feedback.
+        <strong>feedbackHash</strong> links <code>TicketConsumed</code> ↔ <code>NewFeedback</code> — the join recovers <code>payer</code> (see Off-chain payer recovery above).
         <code>(agentId, clientAddress, feedbackIndex)</code> links <code>NewFeedback</code> ↔ <code>FeedbackRevoked</code> / <code>ResponseAppended</code>.
         <code>feedbackHash</code> commits the off-chain artifact at <code>feedbackURI</code> (which embeds the agent's <code>InteractionAttestation</code>).
     </div>
     <div class="why" style="background:#fff7ed;border-color:#fdba74">
-        <strong>Payment-backed vs direct.</strong> The canonical registry is permissionless — a <code>NewFeedback</code> with <em>no</em> same-tx <code>TicketConsumed</code> is unverified direct feedback (anyone can call <code>giveFeedback</code>). <strong>Payment-backed feedback = a <code>NewFeedback</code> co-emitted with a <code>TicketConsumed</code> from <code>X402AgentReputation</code> in the same tx.</strong> That co-occurrence is the on-chain signal aggregators filter on; <code>verify_feedback</code> then checks the ticket + attestation off-chain.
-    </div>
-
-    <h2>Why two contracts, not one (EIP-7702)</h2>
-    <p class="sub" style="margin-bottom:0.5rem">The ticket ledger (<code>X402AgentReputation</code>) and the feedback delegate (<code>FeedbackGateway</code>) can't be merged. An EIP-7702 delegate runs <em>as the client's EOA</em> — that breaks shared state and widens the blast radius, so the two roles need two contracts.</p>
-    <div class="feedback-paths">
-        <div class="path"><strong>1 · A delegate can't hold shared state.</strong> Under 7702 the delegate's code executes with <code>address(this)</code> = the EOA, so every <code>SLOAD</code>/<code>SSTORE</code> hits <em>that EOA's own</em> account storage. A <code>_tickets</code> mapping or <code>_nextTicketId</code> counter living in the delegate would be per-EOA and isolated: the facilitator mints into the shared contract, but a delegated <code>consumeTicket</code> would read the caller's empty storage and never find the ticket. The ticket ledger must be one standalone, stateful contract that every party calls; the delegate must be effectively stateless.</div>
-        <div class="path"><strong>2 · Delegation exposes the whole account — keep the surface tiny.</strong> A set-code authorization persists and lets the delegate's code act <em>as your EOA</em> (move your funds, etc.) until you reset it. Delegating to a contract that also transfers tokens, is <code>Ownable</code>, and holds settlement immutables would put all of that behind your account. <code>FeedbackGateway</code> is a fund-free, ownerless singleton holding only replay nonces, with guarded entrypoints (self-paid needs <code>msg.sender == address(this)</code>; sponsored needs a client-signed EIP-712 <code>FeedbackIntent</code>) — a minimal blast radius is what makes delegating to it acceptable.</div>
-    </div>
-    <div class="why">
-        <strong>Tell-tale:</strong> the gateway even needs a <em>fixed, immutable</em> EIP-712 domain separator (computed at deploy time, not from <code>address(this)</code>) precisely because at runtime <code>address(this)</code> is the EOA, not the gateway. A normal stateful settlement contract has no such constraint — different execution context, different contract.
+        <strong>Payment-backed vs direct.</strong> The canonical registry is permissionless — anyone can call <code>giveFeedback</code>. <strong>Payment-backed feedback = a <code>NewFeedback</code> where <code>clientAddress == FeedbackGateway</code></strong> (only the gateway can be that <code>msg.sender</code>, and it only calls the registry after consuming a valid ticket). That filter is the on-chain signal aggregators use; <code>verify_feedback</code> then checks the ticket + attestation off-chain.
     </div>
 
     <footer>v2 — June 2026. See <a href="../../../../specs/extensions/erc8004_ticket_v2.md">erc8004_ticket_v2.md</a> · <a href="../../../../examples/python/clients/erc8004/README.md">demo README</a></footer>
