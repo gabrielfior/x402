@@ -237,4 +237,130 @@ contract FeedbackGatewayTest is Test {
         vm.expectRevert(FeedbackGateway.SelfFeedbackNotAllowed.selector);
         gateway.submitFeedback(ticketId, _params(keccak256("fb-self")));
     }
+
+    // ----- sponsored submitFeedbackFor -----
+
+    bytes32 private constant FEEDBACK_INTENT_TYPEHASH = keccak256(
+        "FeedbackIntent(address registry,uint256 ticketId,uint256 agentId,address payer,int128 value,uint8 valueDecimals,bytes32 tag1Hash,bytes32 tag2Hash,bytes32 endpointHash,bytes32 feedbackURIHash,bytes32 feedbackHash,uint256 nonce,uint256 deadline)"
+    );
+
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes("FeedbackGateway")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(gateway)
+            )
+        );
+    }
+
+    function _feedbackIntent(uint256 ticketId, IFeedbackGateway.FeedbackParams memory p, uint256 nonce, uint256 deadline)
+        internal
+        view
+        returns (IFeedbackGateway.FeedbackIntent memory)
+    {
+        return IFeedbackGateway.FeedbackIntent({
+            registry: address(registry),
+            ticketId: ticketId,
+            agentId: AGENT_ID,
+            payer: payer,
+            value: p.value,
+            valueDecimals: p.valueDecimals,
+            tag1Hash: keccak256(bytes(p.tag1)),
+            tag2Hash: keccak256(bytes(p.tag2)),
+            endpointHash: keccak256(bytes(p.endpoint)),
+            feedbackURIHash: keccak256(bytes(p.feedbackURI)),
+            feedbackHash: p.feedbackHash,
+            nonce: nonce,
+            deadline: deadline
+        });
+    }
+
+    function _signFeedback(IFeedbackGateway.FeedbackIntent memory i, uint256 pk) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                FEEDBACK_INTENT_TYPEHASH,
+                i.registry, i.ticketId, i.agentId, i.payer,
+                i.value, i.valueDecimals,
+                i.tag1Hash, i.tag2Hash, i.endpointHash, i.feedbackURIHash, i.feedbackHash,
+                i.nonce, i.deadline
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function test_sponsored_relayerSubmitsClientIntent() public {
+        uint256 ticketId = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp + 1 hours);
+        bytes memory sig = _signFeedback(i, payerPk);
+
+        vm.prank(relayer);
+        gateway.submitFeedbackFor(i, p, sig);
+
+        assertTrue(gateway.tickets(ticketId).consumed);
+        assertEq(registry.lastIndex(AGENT_ID, address(gateway)), 1);
+        assertTrue(gateway.usedNonces(payer, 1));
+    }
+
+    function test_sponsored_revertWhen_badSignature() public {
+        uint256 ticketId = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp + 1 hours);
+        bytes memory sig = _signFeedback(i, 0xBAD); // wrong key
+
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.InvalidSignature.selector);
+        gateway.submitFeedbackFor(i, p, sig);
+    }
+
+    function test_sponsored_revertWhen_nonceReused() public {
+        uint256 t1 = _mintTicket();
+        uint256 t2 = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p1 = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i1 = _feedbackIntent(t1, p1, 1, block.timestamp + 1 hours);
+        vm.prank(relayer);
+        gateway.submitFeedbackFor(i1, p1, _signFeedback(i1, payerPk));
+
+        IFeedbackGateway.FeedbackParams memory p2 = _params(keccak256("fb2"));
+        IFeedbackGateway.FeedbackIntent memory i2 = _feedbackIntent(t2, p2, 1, block.timestamp + 1 hours); // same nonce
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.NonceUsed.selector);
+        gateway.submitFeedbackFor(i2, p2, _signFeedback(i2, payerPk));
+    }
+
+    function test_sponsored_revertWhen_expired() public {
+        uint256 ticketId = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp - 1);
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.IntentExpired.selector);
+        gateway.submitFeedbackFor(i, p, _signFeedback(i, payerPk));
+    }
+
+    function test_sponsored_revertWhen_paramsMismatchIntent() public {
+        uint256 ticketId = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp + 1 hours);
+        bytes memory sig = _signFeedback(i, payerPk);
+        // tamper the calldata params after signing the intent
+        p.tag1 = "tampered";
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.ParamsMismatch.selector);
+        gateway.submitFeedbackFor(i, p, sig);
+    }
+
+    function test_sponsored_revertWhen_registryMismatch() public {
+        uint256 ticketId = _mintTicket();
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp + 1 hours);
+        i.registry = makeAddr("wrongRegistry");
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.RegistryMismatch.selector);
+        gateway.submitFeedbackFor(i, p, _signFeedback(i, payerPk));
+    }
 }

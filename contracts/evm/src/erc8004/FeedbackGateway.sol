@@ -188,6 +188,59 @@ contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
         _submitFeedback(msg.sender, ticketId, params);
     }
 
+    /// @notice Sponsored: a relayer submits a client-signed `FeedbackIntent` (client pays no gas).
+    function submitFeedbackFor(
+        FeedbackIntent calldata intent,
+        FeedbackParams calldata params,
+        bytes calldata signature
+    ) external {
+        if (block.timestamp > intent.deadline) revert IntentExpired();
+        if (intent.registry != address(reputationRegistry)) revert RegistryMismatch();
+        if (intent.agentId != _tickets[intent.ticketId].agentId) revert ParamsMismatch();
+        if (usedNonces[intent.payer][intent.nonce]) revert NonceUsed();
+        _requireParamsMatchIntent(intent, params);
+
+        bytes32 digest = _hashTypedDataV4(_feedbackStructHash(intent));
+        if (digest.recover(signature) != intent.payer) revert InvalidSignature();
+
+        usedNonces[intent.payer][intent.nonce] = true;
+        _submitFeedback(intent.payer, intent.ticketId, params);
+    }
+
+    function _requireParamsMatchIntent(FeedbackIntent calldata intent, FeedbackParams calldata params)
+        internal
+        pure
+    {
+        if (
+            intent.value != params.value || intent.valueDecimals != params.valueDecimals
+                || intent.feedbackHash != params.feedbackHash || intent.tag1Hash != keccak256(bytes(params.tag1))
+                || intent.tag2Hash != keccak256(bytes(params.tag2))
+                || intent.endpointHash != keccak256(bytes(params.endpoint))
+                || intent.feedbackURIHash != keccak256(bytes(params.feedbackURI))
+        ) revert ParamsMismatch();
+    }
+
+    function _feedbackStructHash(FeedbackIntent calldata intent) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                FEEDBACK_INTENT_TYPEHASH,
+                intent.registry,
+                intent.ticketId,
+                intent.agentId,
+                intent.payer,
+                intent.value,
+                intent.valueDecimals,
+                intent.tag1Hash,
+                intent.tag2Hash,
+                intent.endpointHash,
+                intent.feedbackURIHash,
+                intent.feedbackHash,
+                intent.nonce,
+                intent.deadline
+            )
+        );
+    }
+
     /// @dev Consume the ticket (gating), dedup the hash, forward `giveFeedback` as the gateway,
     ///      capture the assigned index, and emit `TicketConsumed` carrying the real payer + hash.
     function _submitFeedback(address payer, uint256 ticketId, FeedbackParams calldata params) internal {
