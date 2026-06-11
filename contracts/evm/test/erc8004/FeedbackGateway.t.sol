@@ -465,4 +465,14 @@ contract FeedbackGatewayTest is Test {
         gateway.revokeFeedbackFor(i, _signRevoke(i, payerPk));
         vm.stopPrank();
     }
+
+    function test_sponsored_revertWhen_agentIdMismatch() public {
+        uint256 ticketId = _mintTicket(); // ticket bound to AGENT_ID
+        IFeedbackGateway.FeedbackParams memory p = _params(keccak256("fb1"));
+        IFeedbackGateway.FeedbackIntent memory i = _feedbackIntent(ticketId, p, 1, block.timestamp + 1 hours);
+        i.agentId = AGENT_ID + 1; // intent targets a different agent than the ticket
+        vm.prank(relayer);
+        vm.expectRevert(FeedbackGateway.AgentMismatch.selector);
+        gateway.submitFeedbackFor(i, p, _signFeedback(i, payerPk));
+    }
 }

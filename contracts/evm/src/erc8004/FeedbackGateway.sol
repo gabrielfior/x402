@@ -71,6 +71,7 @@ contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
     error InvalidSignature();
     error RegistryMismatch();
     error ParamsMismatch();
+    error AgentMismatch();
 
     /// @param owner_ Reserved admin handle (currently no privileged functions).
     /// @param permit2Proxy_ Canonical x402ExactPermit2Proxy; `address(0)` disables Permit2 settlement.
@@ -196,7 +197,7 @@ contract FeedbackGateway is IFeedbackGateway, Ownable, EIP712 {
     ) external {
         if (block.timestamp > intent.deadline) revert IntentExpired();
         if (intent.registry != address(reputationRegistry)) revert RegistryMismatch();
-        if (intent.agentId != _tickets[intent.ticketId].agentId) revert ParamsMismatch();
+        if (intent.agentId != _tickets[intent.ticketId].agentId) revert AgentMismatch();
         if (usedNonces[intent.payer][intent.nonce]) revert NonceUsed();
         _requireParamsMatchIntent(intent, params);
 
